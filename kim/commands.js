@@ -674,10 +674,11 @@ export const grupoOpenClose = command({
     }
     try {
         await conn.groupSettingUpdate(m.chat, arg === 'abrir' ? 'not_announcement' : 'announcement');
-        // Importa los textos del módulo de anuncios para mantener
-        // consistencia visual con los demás mensajes automáticos.
-        const { ANNOUNCEMENT_TEXTS } = await import('./announcements.js');
-        return m.reply(arg === 'abrir' ? ANNOUNCEMENT_TEXTS.groupOpen : ANNOUNCEMENT_TEXTS.groupClose);
+        // El anuncio "GRUPO ABIERTO/CERRADO" lo envía kim/announcements.js
+        // automáticamente al detectar el cambio (evento groups.update con
+        // announce: true/false). Aquí solo confirmamos con una reacción
+        // para evitar duplicar el mensaje.
+        return m.react?.(arg === 'abrir' ? '🌸' : '🔒');
     } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
 });
 
