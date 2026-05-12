@@ -109,29 +109,39 @@ function botIdentities(conn) {
 }
 
 async function sendBanner(conn, jid, text, mentions, banner) {
+    // Construir externalAdReply sin campos nulos — en Baileys v7
+    // pasar thumbnail: null provoca un error de validación protobuf
+    // que mata el envío de forma silenciosa.
+    const adReply = {
+        title:               banner.title || global.botname || 'KimdanBot-MD',
+        body:                banner.body  || global.wm     || '',
+        showAdAttribution:   true,
+        containsAutoReply:   true,
+        sourceUrl:           global.md   || 'https://github.com',
+        mediaType:           banner.thumb ? 2 : 1,
+    };
+    // Solo incluir thumbnail si tenemos el Buffer real; si no, thumbnailUrl
+    if (banner.thumb)                       adReply.thumbnail    = banner.thumb;
+    else if (banner.thumbUrl || global.imagen1) adReply.thumbnailUrl = banner.thumbUrl || global.imagen1;
+
     try {
         return await conn.sendMessage(jid, {
             text,
             mentions,
             contextInfo: {
-                mentionedJid: mentions,
-                isForwarded: true,
+                mentionedJid:   mentions,
+                isForwarded:    true,
                 forwardingScore: 999,
-                externalAdReply: {
-                    title: banner.title || global.botname || 'KimdanBot-MD',
-                    body: banner.body || global.wm || '',
-                    thumbnailUrl: banner.thumbUrl || global.imagen1 || '',
-                    thumbnail: banner.thumb || null,
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    sourceUrl: global.md || '',
-                    mediaType: 1,
-                },
+                externalAdReply: adReply,
             },
         });
-    } catch {
-        try { return await conn.sendMessage(jid, { text, mentions }); }
-        catch { /* */ }
+    } catch (err) {
+        console.warn(chalk.yellow('[sendBanner] banner falló, enviando texto plano:'), err?.message || err);
+        try {
+            return await conn.sendMessage(jid, { text, mentions });
+        } catch (err2) {
+            console.error(chalk.red('[sendBanner] texto plano también falló:'), err2?.message || err2);
+        }
     }
 }
 
