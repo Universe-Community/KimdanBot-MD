@@ -108,100 +108,100 @@ function botIdentities(conn) {
     ].filter(Boolean));
 }
 
-async function sendBanner(conn, jid, text, mentionedJid, externalAdReply) {
-    // FIX v7: Estructura simplificada que SÍ funciona con Baileys v7.
-    //
-    // Cosas que QUITAMOS y por qué:
-    //
-    // • forwardedNewsletterMessageInfo: el JID '120363200204060894@newsletter'
-    //   apunta al newsletter del bot ORIGINAL (Kimdan). El bot del usuario
-    //   no está suscrito a ese newsletter, así que en v7 WhatsApp valida
-    //   esto del lado del servidor y RECHAZA SILENCIOSAMENTE el mensaje.
-    //   Baileys no lanza excepción porque del lado cliente todo se ve OK.
-    //   Esa era LA razón principal de por qué welcome/bye no llegaban.
-    //
-    // • previewType: 'PHOTO'  →  Baileys v7 espera el enum numérico (2),
-    //   pasar el string falla la validación protobuf silenciosamente.
-    //
-    // Si en el futuro quieres el efecto "reenviado de newsletter", crea
-    // TU PROPIO newsletter, suscríbete con el bot, y pon ese JID aquí.
+// FIX v7 (versión final): los anuncios fallan silenciosamente cuando se
+// envían con `externalAdReply` + padding de 850 caracteres invisibles
+// (los chars U+200E del bot original). WhatsApp acepta el message ID
+// del lado servidor pero filtra el contenido y nunca lo entrega al chat.
+//
+// Solución: enviar como IMAGEN con CAPTION. La foto del usuario es la
+// imagen principal, el texto va abajo como caption. Es el tipo de mensaje
+// más básico de WhatsApp y NUNCA se filtra. Si no hay foto, fallback a
+// texto plano con mentions top-level.
 
-    console.log(chalk.cyan(`[ann] sendBanner → ${jid?.split('@')[0]} (mentions: ${mentionedJid?.length || 0})`));
+const DEFAULT_USER_PIC = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png';
 
-    // Intento 1: con banner externalAdReply (sin newsletter info)
+// Intenta convertir un LID a su PN equivalente para que las menciones
+// se rendericen como @número-real en lugar de @LID-anónimo.
+async function resolveJidForMention(conn, jid) {
+    if (!jid || !jid.endsWith('@lid')) return jid;
     try {
-        const result = await Promise.race([
-            conn.sendMessage(jid, {
-                text,
-                contextInfo: {
-                    mentionedJid,
-                    externalAdReply,
-                },
-            }),
-            new Promise((_, rej) => setTimeout(
-                () => rej(new Error('Timeout 30s — sendMessage colgado')), 30000
-            )),
-        ]);
-        if (result?.key?.id) {
-            console.log(chalk.green(`[ann] ✓ banner enviado, id: ${result.key.id}`));
-            return result;
+        const pn = await conn.signalRepository?.lidMapping?.getPNForLID?.(jid);
+        if (pn) return pn;
+    } catch { /* */ }
+    return jid;
+}
+
+async function getUserPicBuffer(conn, jid) {
+    try {
+        const url = await conn.profilePictureUrl(jid, 'image');
+        const buf = await getBuffer(url);
+        if (buf && buf.length > 100) return buf;
+    } catch { /* */ }
+    try {
+        const buf = await getBuffer(DEFAULT_USER_PIC);
+        if (buf && buf.length > 100) return buf;
+    } catch { /* */ }
+    return null;
+}
+
+/**
+ * Envía un anuncio como imagen+caption (preferido) o texto plano
+ * (fallback). Con timeout duro para detectar cuelgues.
+ */
+async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = 'ann') {
+    console.log(chalk.cyan(
+        `[ann] ${label} → ${chatJid?.split('@')[0]} (txt:${text.length}ch, pic:${picBuf ? picBuf.length + 'B' : 'null'}, mentions:${mentions?.length || 0})`
+    ));
+
+    // Intento 1: imagen + caption (formato más confiable de v7)
+    if (picBuf) {
+        try {
+            const result = await Promise.race([
+                conn.sendMessage(chatJid, {
+                    image: picBuf,
+                    caption: text,
+                    mentions,
+                }),
+                new Promise((_, rej) => setTimeout(
+                    () => rej(new Error('Timeout 30s — imagen+caption colgado')), 30000
+                )),
+            ]);
+            if (result?.key?.id) {
+                console.log(chalk.green(`[ann] ✓ imagen+caption enviada, id: ${result.key.id}`));
+                return result;
+            }
+            console.warn(chalk.yellow('[ann] imagen+caption respondió sin id'));
+        } catch (err) {
+            console.warn(chalk.yellow(`[ann] imagen+caption FALLÓ: ${err?.message || err}`));
         }
-        console.warn(chalk.yellow('[ann] banner enviado pero sin id en la respuesta'));
-        return result;
-    } catch (err) {
-        console.warn(chalk.yellow(`[ann] banner FALLÓ: ${err?.message || err}`));
     }
 
-    // Intento 2: fallback a mensaje simple con mentions top-level.
-    // Esta forma es la más básica y prácticamente siempre funciona en v7.
+    // Intento 2: texto puro con mentions top-level (formato más simple)
     try {
         const result = await Promise.race([
-            conn.sendMessage(jid, {
-                text,
-                mentions: mentionedJid,
-            }),
+            conn.sendMessage(chatJid, { text, mentions }),
             new Promise((_, rej) => setTimeout(
-                () => rej(new Error('Timeout 30s — fallback colgado')), 30000
+                () => rej(new Error('Timeout 30s — texto plano colgado')), 30000
             )),
         ]);
         if (result?.key?.id) {
             console.log(chalk.green(`[ann] ✓ texto plano enviado, id: ${result.key.id}`));
+            return result;
         }
-        return result;
-    } catch (err2) {
-        console.error(chalk.red(`[ann] sendMessage FALLÓ COMPLETAMENTE: ${err2?.message || err2}`));
-        return null;
+    } catch (err) {
+        console.error(chalk.red(`[ann] texto plano FALLÓ: ${err?.message || err}`));
     }
-}
 
-async function getGroupPicBuffer(conn, chatJid) {
-    const now = Date.now();
-    const cached = _groupPicCache.get(chatJid);
-    if (cached && now - cached.ts < GROUP_PIC_TTL) return cached.buf;
-    try {
-        const url = await conn.profilePictureUrl(chatJid, 'image');
-        const buf = await getBuffer(url);
-        _groupPicCache.set(chatJid, { buf, ts: now });
-        return buf;
-    } catch {
-        const buf = await getBuffer(DEFAULT_GROUP_PIC).catch(() => null);
-        _groupPicCache.set(chatJid, { buf, ts: now });
-        return buf;
-    }
+    return null;
 }
-
-export function invalidateGroupPic(chatJid) { _groupPicCache.delete(chatJid); }
 
 // ─── group-participants.update ──────────────────────────────────────
-
-const DEFAULT_USER_PIC = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png';
 
 async function onParticipantsUpdate(conn, event) {
     const { id: chatJid, participants, action, author } = event;
 
-    // ── Log 1: el evento llegó ──
     console.log(chalk.bold.magenta(
-        `[ann] ${action} en ${chatJid?.split('@')[0]}: ${participants?.length} usuario(s)`
+        `[ann] ${action} en ${chatJid?.split('@')[0]}: ${participants?.length} usuario(s) [author: ${author ? author.split('@')[0] : '—'}]`
     ));
 
     if (!chatJid || !Array.isArray(participants) || participants.length === 0 || !action) {
@@ -209,7 +209,6 @@ async function onParticipantsUpdate(conn, event) {
         return;
     }
 
-    // ── Log 2: estado de la config del chat ──
     let chatCfg;
     try { chatCfg = getChat(chatJid); }
     catch (err) { console.error(chalk.red('[ann] getChat falló:'), err?.message); return; }
@@ -219,10 +218,9 @@ async function onParticipantsUpdate(conn, event) {
     try { meta = await conn.groupMetadata(chatJid); }
     catch (err) { console.warn(chalk.yellow('[ann] groupMetadata falló (uso fallbacks):'), err?.message); }
     const subject = meta?.subject || 'este grupo';
-    const desc    = meta?.desc    || '';
 
     const botJids = botIdentities(conn);
-    const sourceUrl = global.md || 'https://github.com/Kimdanbot-MD/KimdanBot-MD';
+    const botName = global.botname || 'KimdanBot-MD';
 
     for (const participant of participants) {
         const num = typeof participant === 'string'
@@ -231,98 +229,125 @@ async function onParticipantsUpdate(conn, event) {
         if (!num) { console.warn('[ann] participante sin JID, se omite'); continue; }
 
         const isBotItself = botJids.has(num);
-        const numClean    = num.split('@')[0];
+        const numClean = num.split('@')[0];
 
-        // ── Log 3: participante procesado ──
-        console.log(chalk.gray(`[ann] num=${numClean} isBotItself=${isBotItself}`));
+        console.log(chalk.gray(`[ann] participante: ${numClean} isBotItself=${isBotItself}`));
+        if (isBotItself) continue;
 
-        if (isBotItself) continue;  // no nos saludamos a nosotros mismos
+        // ── ¿Quién hizo la acción? 4 escenarios posibles ────────────
+        const isByOther = author && author !== num;
+        const isByBot   = author && botJids.has(author);
+        const isByAdmin = isByOther && !isByBot;
+        const authorClean = author?.split('@')[0];
 
-        // Foto del usuario (thumbnail del banner)
-        let ppBuf = null;
+        // Resuelve LID → PN si es posible (para que las menciones se vean
+        // como @número-real en lugar de @LID-anónimo).
+        const numForMention    = await resolveJidForMention(conn, num);
+        const authorForMention = author ? await resolveJidForMention(conn, author) : null;
+        const mentions = [numForMention];
+        if (isByAdmin && authorForMention) mentions.push(authorForMention);
+
+        // Foto de perfil del usuario (será la imagen principal del mensaje)
+        const ppBuf = await getUserPicBuffer(conn, num);
+
         try {
-            const ppUrl = await conn.profilePictureUrl(num, 'image');
-            ppBuf = await getBuffer(ppUrl);
-        } catch {
-            ppBuf = await getBuffer(DEFAULT_USER_PIC).catch(() => null);
-        }
-
-        try {
-            // ─ BIENVENIDA ────────────────────────────────────────────
+            // ═════ BIENVENIDA (3 variantes según quién agregó) ═════
             if (action === 'add' && chatCfg.welcome !== false) {
-                const text =
-                    `${ANNOUNCEMENT_TEXTS.welcomeOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.welcomeBody}\n` +
-                    `${String.fromCharCode(8206).repeat(850)}\n${desc}`;
-                const adReply = {
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    title:        ANNOUNCEMENT_TEXTS.welcomeTitle,
-                    body:         subject,
-                    mediaType:    1, // 1 = imagen (valor numérico del enum, v7-safe)
-                    thumbnailUrl: global.imagen1 || sourceUrl,
-                    sourceUrl,
-                };
-                if (ppBuf) adReply.thumbnail = ppBuf;
-                console.log(chalk.cyan(`[ann] → enviando welcome a ${numClean}`));
-                await sendBanner(conn, chatJid, text, [num], adReply);
+                let text;
+                if (isByAdmin) {
+                    // Variante: agregada(o) por un admin del grupo
+                    text =
+`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+
+💐 Fuiste agregada(o) al grupo *${subject}* por @${authorClean}.
+
+🍓 Soy *${botName}*, el bot kawaii del grupo (✿❛◡❛)
+
+📰 Por favor lee la *descripción del grupo* y sigue las reglas.
+✨(♡´▽\`♡)✨`;
+                } else if (isByBot) {
+                    // Variante: agregada(o) por el bot vía comando
+                    text =
+`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+
+💐 Fuiste agregada(o) al grupo *${subject}*.
+
+🍓 Soy *${botName}*, el bot kawaii del grupo (✿❛◡❛)
+
+📰 Por favor lee la *descripción del grupo*.
+✨(♡´▽\`♡)✨`;
+                } else {
+                    // Variante: se unió por sí misma(o) (link de invitación)
+                    text =
+`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+
+💐 Te uniste al grupo *${subject}*.
+
+🍓 Soy *${botName}*, el bot kawaii del grupo (✿❛◡❛)
+
+🫐 Espero disfrutes tu estancia.
+📰 Por favor lee la *descripción del grupo* y sigue las reglas.
+✨(♡´▽\`♡)✨`;
+                }
+                await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'welcome');
             }
 
-            // ─ DESPEDIDA ─────────────────────────────────────────────
+            // ═════ DESPEDIDA (3 variantes según quién removió) ═════
             else if (action === 'remove' && chatCfg.bye !== false) {
-                const text = `${ANNOUNCEMENT_TEXTS.byeOpen} @${numClean} 🍇*\n${ANNOUNCEMENT_TEXTS.byeBody}`;
-                const adReply = {
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    title:        ANNOUNCEMENT_TEXTS.byeTitle,
-                    body:         subject,
-                    mediaType:    1,
-                    thumbnailUrl: global.imagen1 || sourceUrl,
-                    sourceUrl,
-                };
-                if (ppBuf) adReply.thumbnail = ppBuf;
-                console.log(chalk.cyan(`[ann] → enviando bye a ${numClean}`));
-                await sendBanner(conn, chatJid, text, [num], adReply);
+                let text;
+                if (isByAdmin) {
+                    // Expulsada(o) por un admin del grupo
+                    text =
+`❌ *@${numClean} fue expulsada(o) del grupo* 🍇
+
+🫐 Acción realizada por @${authorClean}.
+👋 Hasta luego.`;
+                } else if (isByBot) {
+                    // Expulsada(o) por el bot vía comando .kick
+                    text =
+`❌ *@${numClean} fue expulsada(o) del grupo* 🍇
+
+🤖 Acción realizada por el bot.
+👋 Hasta luego.`;
+                } else {
+                    // Se fue por su propia cuenta
+                    text =
+`👋 *@${numClean} salió del grupo* 🍇
+
+🍬 Gracias por los buenos momentos.
+✨ Fue un placer conocerte.
+🫐 Hasta pronto.`;
+                }
+                await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'bye');
             }
 
-            // ─ ASCENSO ───────────────────────────────────────────────
+            // ═════ ASCENSO A ADMIN ═════════════════════════════════
             else if (action === 'promote' && chatCfg.detect !== false) {
-                const authorClean = author ? author.split('@')[0] : null;
-                const text = authorClean
-                    ? `${ANNOUNCEMENT_TEXTS.promoteOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.promoteMid} @${authorClean} ${ANNOUNCEMENT_TEXTS.promoteClose}`
-                    : `${ANNOUNCEMENT_TEXTS.promoteOpen} @${numClean} ahora es admin ${ANNOUNCEMENT_TEXTS.promoteClose}`;
-                const mentions = author ? [num, author] : [num];
-                const adReply = {
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    title:    ANNOUNCEMENT_TEXTS.promoteTitle,
-                    body:     global.wm || '',
-                    mediaType: 1,
-                    thumbnailUrl: global.imagen1 || sourceUrl,
-                    sourceUrl,
-                };
-                console.log(chalk.cyan(`[ann] → enviando promote a ${numClean}`));
-                await sendBanner(conn, chatJid, text, mentions, adReply);
+                const text = isByAdmin
+                    ? `⭐ *¡Nuevo administrador!* 🎉
+
+🌟 *@${numClean}* ahora es admin del grupo.
+🌼 Promoción otorgada por *@${authorClean}*.`
+                    : `⭐ *¡Nuevo administrador!* 🎉
+
+🌟 *@${numClean}* ahora es admin del grupo.`;
+                await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'promote');
             }
 
-            // ─ DEGRADACIÓN ───────────────────────────────────────────
+            // ═════ DEGRADACIÓN DE ADMIN ════════════════════════════
             else if (action === 'demote' && chatCfg.detect !== false) {
-                const authorClean = author ? author.split('@')[0] : null;
-                const text = authorClean
-                    ? `${ANNOUNCEMENT_TEXTS.demoteOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.demoteMid} @${authorClean} ${ANNOUNCEMENT_TEXTS.promoteClose}`
-                    : `${ANNOUNCEMENT_TEXTS.demoteOpen} @${numClean} ya no es admin ${ANNOUNCEMENT_TEXTS.promoteClose}`;
-                const mentions = author ? [num, author] : [num];
-                const adReply = {
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    title:    ANNOUNCEMENT_TEXTS.demoteTitle,
-                    body:     global.wm || '',
-                    mediaType: 1,
-                    thumbnailUrl: global.imagen1 || sourceUrl,
-                    sourceUrl,
-                };
-                console.log(chalk.cyan(`[ann] → enviando demote a ${numClean}`));
-                await sendBanner(conn, chatJid, text, mentions, adReply);
-            } else {
+                const text = isByAdmin
+                    ? `🍃 *Un admin menos* 🫐
+
+❄ *@${numClean}* ya no es admin del grupo.
+🌼 Acción realizada por *@${authorClean}*.`
+                    : `🍃 *Un admin menos* 🫐
+
+❄ *@${numClean}* ya no es admin del grupo.`;
+                await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'demote');
+            }
+
+            else {
                 console.log(chalk.gray(`[ann] acción '${action}' omitida (cfg desactivada o no aplica)`));
             }
 
