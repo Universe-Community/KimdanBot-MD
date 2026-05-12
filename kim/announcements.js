@@ -159,14 +159,33 @@ async function onParticipantsUpdate(conn, event) {
     const { id: chatJid, participants, action, author } = event;
     if (!chatJid || !Array.isArray(participants) || !action) return;
 
-    let chatCfg;
-    try { chatCfg = getChat(chatJid); } catch { return; }
+    // Log diagnóstico: así verás en consola si el evento sí dispara.
+    console.log(chalk.bold.magenta(
+        `[announcements] participants.${action} en ${chatJid.split('@')[0]}: ${participants.length} usuario(s)`
+    ));
 
-    let meta;
-    try { meta = await conn.groupMetadata(chatJid); } catch { return; }
+    let chatCfg;
+    try { chatCfg = getChat(chatJid); }
+    catch (err) {
+        console.error(chalk.red('[announcements] getChat falló:'), err?.message);
+        return;
+    }
+
+    // FIX: No abortamos si groupMetadata falla. Usamos fallbacks para
+    // poder enviar el welcome/bye igualmente. Esto pasa típicamente en
+    // 'remove' cuando es el bot el que sale, o por glitches de red.
+    let meta = null;
+    try { meta = await conn.groupMetadata(chatJid); }
+    catch (err) {
+        console.warn(chalk.yellow(
+            `[announcements] groupMetadata falló para ${chatJid.split('@')[0]} — uso fallbacks: ${err?.message}`
+        ));
+    }
+    const subject = meta?.subject || 'este grupo';
+    const desc    = meta?.desc || '';
 
     const botJids = botIdentities(conn);
-    const groupPicBuf = await getGroupPicBuffer(conn, chatJid);
+    const groupPicBuf = await getGroupPicBuffer(conn, chatJid).catch(() => null);
 
     for (const num of participants) {
         const isBotItself = botJids.has(num);
@@ -176,10 +195,10 @@ async function onParticipantsUpdate(conn, event) {
             if (action === 'add' && chatCfg.welcome !== false && !isBotItself) {
                 const text =
                     `${ANNOUNCEMENT_TEXTS.welcomeOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.welcomeBody}\n` +
-                    `${String.fromCharCode(8206).repeat(850)}\n${meta.desc || ''}`;
+                    `${String.fromCharCode(8206).repeat(850)}\n${desc}`;
                 await sendBanner(conn, chatJid, text, [num], {
                     title: ANNOUNCEMENT_TEXTS.welcomeTitle,
-                    body: meta.subject,
+                    body: subject,
                     thumb: groupPicBuf,
                 });
             }
@@ -187,7 +206,7 @@ async function onParticipantsUpdate(conn, event) {
                 const text = `${ANNOUNCEMENT_TEXTS.byeOpen} @${numClean} 🍇*\n${ANNOUNCEMENT_TEXTS.byeBody}`;
                 await sendBanner(conn, chatJid, text, [num], {
                     title: ANNOUNCEMENT_TEXTS.byeTitle,
-                    body: meta.subject,
+                    body: subject,
                     thumb: groupPicBuf,
                 });
             }
@@ -199,7 +218,7 @@ async function onParticipantsUpdate(conn, event) {
                 const mentions = author ? [num, author] : [num];
                 await sendBanner(conn, chatJid, text, mentions, {
                     title: ANNOUNCEMENT_TEXTS.promoteTitle,
-                    body: meta.subject,
+                    body: subject,
                     thumb: groupPicBuf,
                 });
             }
@@ -211,7 +230,7 @@ async function onParticipantsUpdate(conn, event) {
                 const mentions = author ? [num, author] : [num];
                 await sendBanner(conn, chatJid, text, mentions, {
                     title: ANNOUNCEMENT_TEXTS.demoteTitle,
-                    body: meta.subject,
+                    body: subject,
                     thumb: groupPicBuf,
                 });
             }
@@ -226,13 +245,46 @@ async function onParticipantsUpdate(conn, event) {
 async function onGroupsUpdate(conn, updates) {
     for (const u of updates || []) {
         if (!u.id) continue;
+
+        // Log diagnóstico: muestra qué campos cambió WhatsApp.
+        const fields = Object.keys(u).filter(k => k !== 'id');
+        console.log(chalk.bold.magenta(
+            `[announcements] groups.update en ${u.id.split('@')[0]}: ${fields.join(', ')}`
+        ));
+
         const chatCfg = getChat(u.id);
         if (chatCfg.notifyGroupChanges === false) continue;
+
         try {
             let txt = null;
-            if (u.subject)   txt = `${ANNOUNCEMENT_TEXTS.subjectChange}\n\n*Nuevo nombre:* ${u.subject}`;
-            else if (u.desc) txt = ANNOUNCEMENT_TEXTS.descChange;
-            else if (u.icon) txt = ANNOUNCEMENT_TEXTS.iconChange;
+
+            // CAMBIOS DE CONFIGURACIÓN (los que faltaban):
+            //   announce: true  = grupo cerrado (solo admins escriben)
+            //   announce: false = grupo abierto
+            //   restrict: true  = solo admins editan info del grupo
+            //   restrict: false = todos editan info
+            if (u.announce === true) {
+                txt = ANNOUNCEMENT_TEXTS.groupClose;
+            } else if (u.announce === false) {
+                txt = ANNOUNCEMENT_TEXTS.groupOpen;
+            } else if (u.restrict === true) {
+                txt = `*✿═══━ ❀ ━═══✿*\n*🔒 𝐂𝐨𝐧𝐟𝐢𝐠𝐮𝐫𝐚𝐜𝐢𝐨́𝐧 𝐝𝐞 𝐠𝐫𝐮𝐩𝐨 𝐀𝐂𝐓𝐔𝐀𝐋𝐈𝐙𝐀𝐃𝐀 🔒*\n*✿═══━ ❀ ━═══✿*\n\n*🌺 Solo los admins pueden editar la info del grupo.*`;
+            } else if (u.restrict === false) {
+                txt = `*✿═══━ ❀ ━═══✿*\n*🌸 𝐂𝐨𝐧𝐟𝐢𝐠𝐮𝐫𝐚𝐜𝐢𝐨́𝐧 𝐝𝐞 𝐠𝐫𝐮𝐩𝐨 𝐀𝐂𝐓𝐔𝐀𝐋𝐈𝐙𝐀𝐃𝐀 🌸*\n*✿═══━ ❀ ━═══✿*\n\n*💐 Todos pueden editar la info del grupo.*`;
+            }
+
+            // CAMBIOS DE METADATA:
+            else if (u.subject !== undefined && u.subject !== null) {
+                txt = `${ANNOUNCEMENT_TEXTS.subjectChange}\n\n*Nuevo nombre:* ${u.subject}`;
+            } else if (u.desc !== undefined) {
+                txt = `${ANNOUNCEMENT_TEXTS.descChange}${u.desc ? '\n\n*Nueva descripción:*\n' + u.desc : '\n\n(descripción vacía)'}`;
+            } else if (u.icon !== undefined) {
+                // Foto cambió: invalida el cache para que la próxima
+                // bienvenida use la nueva foto.
+                invalidateGroupPic(u.id);
+                txt = ANNOUNCEMENT_TEXTS.iconChange;
+            }
+
             if (txt) await conn.sendMessage(u.id, { text: txt });
         } catch (err) {
             console.error(chalk.red('[announcements] groups.update:'), err?.message || err);
