@@ -187,7 +187,14 @@ async function onParticipantsUpdate(conn, event) {
     const botJids = botIdentities(conn);
     const groupPicBuf = await getGroupPicBuffer(conn, chatJid).catch(() => null);
 
-    for (const num of participants) {
+    for (const participant of participants) {
+        // Baileys v7 puede enviar participantes como objetos { id: jid }
+        // en lugar de strings simples. Normalizamos aquí para ambos casos.
+        const num = typeof participant === 'string'
+            ? participant
+            : (participant?.id ?? participant?.jid ?? '');
+        if (!num) continue;
+
         const isBotItself = botJids.has(num);
         const numClean = num.split('@')[0];
 
