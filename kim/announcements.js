@@ -109,30 +109,34 @@ function botIdentities(conn) {
 }
 
 async function sendBanner(conn, jid, text, mentions, banner) {
-    // Construir externalAdReply sin campos nulos — en Baileys v7
-    // pasar thumbnail: null provoca un error de validación protobuf
-    // que mata el envío de forma silenciosa.
-    const adReply = {
-        title:               banner.title || global.botname || 'KimdanBot-MD',
-        body:                banner.body  || global.wm     || '',
-        showAdAttribution:   true,
-        containsAutoReply:   true,
-        sourceUrl:           global.md   || 'https://github.com',
-        mediaType:           banner.thumb ? 2 : 1,
-    };
-    // Solo incluir thumbnail si tenemos el Buffer real; si no, thumbnailUrl
-    if (banner.thumb)                       adReply.thumbnail    = banner.thumb;
-    else if (banner.thumbUrl || global.imagen1) adReply.thumbnailUrl = banner.thumbUrl || global.imagen1;
+    // El patrón que funciona en Baileys v7 requiere forwardedNewsletterMessageInfo
+    // + previewType: 'PHOTO' + thumbnail como Buffer real.
+    // Sin forwardedNewsletterMessageInfo el externalAdReply se descarta silenciosamente.
+    const sourceUrl = global.md || 'https://github.com/Kimdanbot-MD/KimdanBot-MD';
 
     try {
         return await conn.sendMessage(jid, {
             text,
             mentions,
             contextInfo: {
-                mentionedJid:   mentions,
-                isForwarded:    true,
-                forwardingScore: 999,
-                externalAdReply: adReply,
+                mentionedJid: mentions,
+                isForwarded: true,
+                forwardingScore: 9999,
+                forwardedNewsletterMessageInfo: {
+                    newsletterJid:  '120363200204060894@newsletter',
+                    serverMessageId: '',
+                    newsletterName:  global.botname || 'KimdanBot-MD',
+                },
+                externalAdReply: {
+                    showAdAttribution: true,
+                    containsAutoReply: true,
+                    title:       banner.title || global.botname || 'KimdanBot-MD',
+                    body:        banner.body  || global.wm     || '',
+                    previewType: 'PHOTO',
+                    thumbnailUrl: global.imagen1 || sourceUrl,
+                    thumbnail:   banner.thumb  || undefined,
+                    sourceUrl,
+                },
             },
         });
     } catch (err) {
@@ -197,6 +201,8 @@ async function onParticipantsUpdate(conn, event) {
     const botJids = botIdentities(conn);
     const groupPicBuf = await getGroupPicBuffer(conn, chatJid).catch(() => null);
 
+    const DEFAULT_USER_PIC = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png';
+
     for (const participant of participants) {
         // Baileys v7 puede enviar participantes como objetos { id: jid }
         // en lugar de strings simples. Normalizamos aquí para ambos casos.
@@ -208,6 +214,15 @@ async function onParticipantsUpdate(conn, event) {
         const isBotItself = botJids.has(num);
         const numClean = num.split('@')[0];
 
+        // Foto de perfil del usuario (como thumbnail del anuncio)
+        let userPicBuf = null;
+        try {
+            const ppuser = await conn.profilePictureUrl(num, 'image');
+            userPicBuf = await getBuffer(ppuser);
+        } catch {
+            userPicBuf = await getBuffer(DEFAULT_USER_PIC).catch(() => null);
+        }
+
         try {
             if (action === 'add' && chatCfg.welcome !== false && !isBotItself) {
                 const text =
@@ -216,7 +231,7 @@ async function onParticipantsUpdate(conn, event) {
                 await sendBanner(conn, chatJid, text, [num], {
                     title: ANNOUNCEMENT_TEXTS.welcomeTitle,
                     body: subject,
-                    thumb: groupPicBuf,
+                    thumb: userPicBuf,
                 });
             }
             else if (action === 'remove' && chatCfg.bye !== false && !isBotItself) {
@@ -224,7 +239,7 @@ async function onParticipantsUpdate(conn, event) {
                 await sendBanner(conn, chatJid, text, [num], {
                     title: ANNOUNCEMENT_TEXTS.byeTitle,
                     body: subject,
-                    thumb: groupPicBuf,
+                    thumb: userPicBuf,
                 });
             }
             else if (action === 'promote' && chatCfg.detect !== false && !isBotItself) {
@@ -236,7 +251,7 @@ async function onParticipantsUpdate(conn, event) {
                 await sendBanner(conn, chatJid, text, mentions, {
                     title: ANNOUNCEMENT_TEXTS.promoteTitle,
                     body: subject,
-                    thumb: groupPicBuf,
+                    thumb: userPicBuf,
                 });
             }
             else if (action === 'demote' && chatCfg.detect !== false && !isBotItself) {
@@ -248,7 +263,7 @@ async function onParticipantsUpdate(conn, event) {
                 await sendBanner(conn, chatJid, text, mentions, {
                     title: ANNOUNCEMENT_TEXTS.demoteTitle,
                     body: subject,
-                    thumb: groupPicBuf,
+                    thumb: userPicBuf,
                 });
             }
         } catch (err) {
