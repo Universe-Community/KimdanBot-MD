@@ -108,43 +108,33 @@ function botIdentities(conn) {
     ].filter(Boolean));
 }
 
-async function sendBanner(conn, jid, text, mentions, banner) {
-    // El patrón que funciona en Baileys v7 requiere forwardedNewsletterMessageInfo
-    // + previewType: 'PHOTO' + thumbnail como Buffer real.
-    // Sin forwardedNewsletterMessageInfo el externalAdReply se descarta silenciosamente.
-    const sourceUrl = global.md || 'https://github.com/Kimdanbot-MD/KimdanBot-MD';
-
+async function sendBanner(conn, jid, text, mentionedJid, externalAdReply) {
+    // Estructura exacta del bot de referencia que sí funciona.
+    // IMPORTANTE: no pasar "mentions" top-level — en Baileys v7 eso
+    // sobreescribe el contextInfo que construimos aquí.
     try {
-        return await conn.sendMessage(jid, {
+        await conn.sendMessage(jid, {
             text,
-            mentions,
             contextInfo: {
-                mentionedJid: mentions,
+                mentionedJid,
                 isForwarded: true,
                 forwardingScore: 9999,
                 forwardedNewsletterMessageInfo: {
-                    newsletterJid:  '120363200204060894@newsletter',
+                    newsletterJid:   '120363200204060894@newsletter',
                     serverMessageId: '',
                     newsletterName:  global.botname || 'KimdanBot-MD',
                 },
-                externalAdReply: {
-                    showAdAttribution: true,
-                    containsAutoReply: true,
-                    title:       banner.title || global.botname || 'KimdanBot-MD',
-                    body:        banner.body  || global.wm     || '',
-                    previewType: 'PHOTO',
-                    thumbnailUrl: global.imagen1 || sourceUrl,
-                    thumbnail:   banner.thumb  || undefined,
-                    sourceUrl,
-                },
+                externalAdReply,
             },
         });
+        console.log(chalk.green('[ann] ✓ mensaje enviado con banner'));
     } catch (err) {
-        console.warn(chalk.yellow('[sendBanner] banner falló, enviando texto plano:'), err?.message || err);
+        console.warn(chalk.yellow('[ann] banner falló, enviando texto plano:'), err?.message || err);
         try {
-            return await conn.sendMessage(jid, { text, mentions });
+            await conn.sendMessage(jid, { text, contextInfo: { mentionedJid } });
+            console.log(chalk.green('[ann] ✓ mensaje enviado sin banner'));
         } catch (err2) {
-            console.error(chalk.red('[sendBanner] texto plano también falló:'), err2?.message || err2);
+            console.error(chalk.red('[ann] sendMessage también falló:'), err2?.message || err2);
         }
     }
 }
@@ -169,105 +159,140 @@ export function invalidateGroupPic(chatJid) { _groupPicCache.delete(chatJid); }
 
 // ─── group-participants.update ──────────────────────────────────────
 
+const DEFAULT_USER_PIC = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png';
+
 async function onParticipantsUpdate(conn, event) {
     const { id: chatJid, participants, action, author } = event;
-    if (!chatJid || !Array.isArray(participants) || !action) return;
 
-    // Log diagnóstico: así verás en consola si el evento sí dispara.
+    // ── Log 1: el evento llegó ──
     console.log(chalk.bold.magenta(
-        `[announcements] participants.${action} en ${chatJid.split('@')[0]}: ${participants.length} usuario(s)`
+        `[ann] ${action} en ${chatJid?.split('@')[0]}: ${participants?.length} usuario(s)`
     ));
 
-    let chatCfg;
-    try { chatCfg = getChat(chatJid); }
-    catch (err) {
-        console.error(chalk.red('[announcements] getChat falló:'), err?.message);
+    if (!chatJid || !Array.isArray(participants) || participants.length === 0 || !action) {
+        console.warn(chalk.yellow('[ann] evento incompleto, se omite'));
         return;
     }
 
-    // FIX: No abortamos si groupMetadata falla. Usamos fallbacks para
-    // poder enviar el welcome/bye igualmente. Esto pasa típicamente en
-    // 'remove' cuando es el bot el que sale, o por glitches de red.
+    // ── Log 2: estado de la config del chat ──
+    let chatCfg;
+    try { chatCfg = getChat(chatJid); }
+    catch (err) { console.error(chalk.red('[ann] getChat falló:'), err?.message); return; }
+    console.log(chalk.gray(`[ann] cfg → welcome:${chatCfg.welcome} bye:${chatCfg.bye} detect:${chatCfg.detect}`));
+
     let meta = null;
     try { meta = await conn.groupMetadata(chatJid); }
-    catch (err) {
-        console.warn(chalk.yellow(
-            `[announcements] groupMetadata falló para ${chatJid.split('@')[0]} — uso fallbacks: ${err?.message}`
-        ));
-    }
+    catch (err) { console.warn(chalk.yellow('[ann] groupMetadata falló (uso fallbacks):'), err?.message); }
     const subject = meta?.subject || 'este grupo';
-    const desc    = meta?.desc || '';
+    const desc    = meta?.desc    || '';
 
     const botJids = botIdentities(conn);
-    const groupPicBuf = await getGroupPicBuffer(conn, chatJid).catch(() => null);
-
-    const DEFAULT_USER_PIC = 'https://cdn.pixabay.com/photo/2015/10/05/22/37/blank-profile-picture-973460_960_720.png';
+    const sourceUrl = global.md || 'https://github.com/Kimdanbot-MD/KimdanBot-MD';
 
     for (const participant of participants) {
-        // Baileys v7 puede enviar participantes como objetos { id: jid }
-        // en lugar de strings simples. Normalizamos aquí para ambos casos.
         const num = typeof participant === 'string'
             ? participant
             : (participant?.id ?? participant?.jid ?? '');
-        if (!num) continue;
+        if (!num) { console.warn('[ann] participante sin JID, se omite'); continue; }
 
         const isBotItself = botJids.has(num);
-        const numClean = num.split('@')[0];
+        const numClean    = num.split('@')[0];
 
-        // Foto de perfil del usuario (como thumbnail del anuncio)
-        let userPicBuf = null;
+        // ── Log 3: participante procesado ──
+        console.log(chalk.gray(`[ann] num=${numClean} isBotItself=${isBotItself}`));
+
+        if (isBotItself) continue;  // no nos saludamos a nosotros mismos
+
+        // Foto del usuario (thumbnail del banner)
+        let ppBuf = null;
         try {
-            const ppuser = await conn.profilePictureUrl(num, 'image');
-            userPicBuf = await getBuffer(ppuser);
+            const ppUrl = await conn.profilePictureUrl(num, 'image');
+            ppBuf = await getBuffer(ppUrl);
         } catch {
-            userPicBuf = await getBuffer(DEFAULT_USER_PIC).catch(() => null);
+            ppBuf = await getBuffer(DEFAULT_USER_PIC).catch(() => null);
         }
 
         try {
-            if (action === 'add' && chatCfg.welcome !== false && !isBotItself) {
+            // ─ BIENVENIDA ────────────────────────────────────────────
+            if (action === 'add' && chatCfg.welcome !== false) {
                 const text =
                     `${ANNOUNCEMENT_TEXTS.welcomeOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.welcomeBody}\n` +
                     `${String.fromCharCode(8206).repeat(850)}\n${desc}`;
-                await sendBanner(conn, chatJid, text, [num], {
-                    title: ANNOUNCEMENT_TEXTS.welcomeTitle,
-                    body: subject,
-                    thumb: userPicBuf,
-                });
+                const adReply = {
+                    showAdAttribution: true,
+                    containsAutoReply: true,
+                    title:       ANNOUNCEMENT_TEXTS.welcomeTitle,
+                    body:        subject,
+                    previewType: 'PHOTO',
+                    thumbnailUrl: global.imagen1 || sourceUrl,
+                    sourceUrl,
+                };
+                if (ppBuf) adReply.thumbnail = ppBuf;
+                console.log(chalk.cyan(`[ann] → enviando welcome a ${numClean}`));
+                await sendBanner(conn, chatJid, text, [num], adReply);
             }
-            else if (action === 'remove' && chatCfg.bye !== false && !isBotItself) {
+
+            // ─ DESPEDIDA ─────────────────────────────────────────────
+            else if (action === 'remove' && chatCfg.bye !== false) {
                 const text = `${ANNOUNCEMENT_TEXTS.byeOpen} @${numClean} 🍇*\n${ANNOUNCEMENT_TEXTS.byeBody}`;
-                await sendBanner(conn, chatJid, text, [num], {
-                    title: ANNOUNCEMENT_TEXTS.byeTitle,
-                    body: subject,
-                    thumb: userPicBuf,
-                });
+                const adReply = {
+                    showAdAttribution: true,
+                    containsAutoReply: true,
+                    title:       ANNOUNCEMENT_TEXTS.byeTitle,
+                    body:        subject,
+                    previewType: 'PHOTO',
+                    thumbnailUrl: global.imagen1 || sourceUrl,
+                    sourceUrl,
+                };
+                if (ppBuf) adReply.thumbnail = ppBuf;
+                console.log(chalk.cyan(`[ann] → enviando bye a ${numClean}`));
+                await sendBanner(conn, chatJid, text, [num], adReply);
             }
-            else if (action === 'promote' && chatCfg.detect !== false && !isBotItself) {
+
+            // ─ ASCENSO ───────────────────────────────────────────────
+            else if (action === 'promote' && chatCfg.detect !== false) {
                 const authorClean = author ? author.split('@')[0] : null;
                 const text = authorClean
                     ? `${ANNOUNCEMENT_TEXTS.promoteOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.promoteMid} @${authorClean} ${ANNOUNCEMENT_TEXTS.promoteClose}`
                     : `${ANNOUNCEMENT_TEXTS.promoteOpen} @${numClean} ahora es admin ${ANNOUNCEMENT_TEXTS.promoteClose}`;
                 const mentions = author ? [num, author] : [num];
-                await sendBanner(conn, chatJid, text, mentions, {
-                    title: ANNOUNCEMENT_TEXTS.promoteTitle,
-                    body: subject,
-                    thumb: userPicBuf,
-                });
+                const adReply = {
+                    showAdAttribution: true,
+                    containsAutoReply: true,
+                    title:    ANNOUNCEMENT_TEXTS.promoteTitle,
+                    body:     global.wm || '',
+                    mediaType: 1,
+                    thumbnailUrl: global.imagen1 || sourceUrl,
+                    sourceUrl,
+                };
+                console.log(chalk.cyan(`[ann] → enviando promote a ${numClean}`));
+                await sendBanner(conn, chatJid, text, mentions, adReply);
             }
-            else if (action === 'demote' && chatCfg.detect !== false && !isBotItself) {
+
+            // ─ DEGRADACIÓN ───────────────────────────────────────────
+            else if (action === 'demote' && chatCfg.detect !== false) {
                 const authorClean = author ? author.split('@')[0] : null;
                 const text = authorClean
                     ? `${ANNOUNCEMENT_TEXTS.demoteOpen} @${numClean} ${ANNOUNCEMENT_TEXTS.demoteMid} @${authorClean} ${ANNOUNCEMENT_TEXTS.promoteClose}`
                     : `${ANNOUNCEMENT_TEXTS.demoteOpen} @${numClean} ya no es admin ${ANNOUNCEMENT_TEXTS.promoteClose}`;
                 const mentions = author ? [num, author] : [num];
-                await sendBanner(conn, chatJid, text, mentions, {
-                    title: ANNOUNCEMENT_TEXTS.demoteTitle,
-                    body: subject,
-                    thumb: userPicBuf,
-                });
+                const adReply = {
+                    showAdAttribution: true,
+                    containsAutoReply: true,
+                    title:    ANNOUNCEMENT_TEXTS.demoteTitle,
+                    body:     global.wm || '',
+                    mediaType: 1,
+                    thumbnailUrl: global.imagen1 || sourceUrl,
+                    sourceUrl,
+                };
+                console.log(chalk.cyan(`[ann] → enviando demote a ${numClean}`));
+                await sendBanner(conn, chatJid, text, mentions, adReply);
+            } else {
+                console.log(chalk.gray(`[ann] acción '${action}' omitida (cfg desactivada o no aplica)`));
             }
+
         } catch (err) {
-            console.error(chalk.red('[announcements] participantes:'), err?.message || err);
+            console.error(chalk.red('[ann] error en bucle de participantes:'), err?.message || err);
         }
     }
 }
