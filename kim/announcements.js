@@ -109,33 +109,68 @@ function botIdentities(conn) {
 }
 
 async function sendBanner(conn, jid, text, mentionedJid, externalAdReply) {
-    // Estructura exacta del bot de referencia que sí funciona.
-    // IMPORTANTE: no pasar "mentions" top-level — en Baileys v7 eso
-    // sobreescribe el contextInfo que construimos aquí.
+    // FIX v7: Estructura simplificada que SÍ funciona con Baileys v7.
+    //
+    // Cosas que QUITAMOS y por qué:
+    //
+    // • forwardedNewsletterMessageInfo: el JID '120363200204060894@newsletter'
+    //   apunta al newsletter del bot ORIGINAL (Kimdan). El bot del usuario
+    //   no está suscrito a ese newsletter, así que en v7 WhatsApp valida
+    //   esto del lado del servidor y RECHAZA SILENCIOSAMENTE el mensaje.
+    //   Baileys no lanza excepción porque del lado cliente todo se ve OK.
+    //   Esa era LA razón principal de por qué welcome/bye no llegaban.
+    //
+    // • previewType: 'PHOTO'  →  Baileys v7 espera el enum numérico (2),
+    //   pasar el string falla la validación protobuf silenciosamente.
+    //
+    // Si en el futuro quieres el efecto "reenviado de newsletter", crea
+    // TU PROPIO newsletter, suscríbete con el bot, y pon ese JID aquí.
+
+    console.log(chalk.cyan(`[ann] sendBanner → ${jid?.split('@')[0]} (mentions: ${mentionedJid?.length || 0})`));
+
+    // Intento 1: con banner externalAdReply (sin newsletter info)
     try {
-        await conn.sendMessage(jid, {
-            text,
-            contextInfo: {
-                mentionedJid,
-                isForwarded: true,
-                forwardingScore: 9999,
-                forwardedNewsletterMessageInfo: {
-                    newsletterJid:   '120363200204060894@newsletter',
-                    serverMessageId: '',
-                    newsletterName:  global.botname || 'KimdanBot-MD',
+        const result = await Promise.race([
+            conn.sendMessage(jid, {
+                text,
+                contextInfo: {
+                    mentionedJid,
+                    externalAdReply,
                 },
-                externalAdReply,
-            },
-        });
-        console.log(chalk.green('[ann] ✓ mensaje enviado con banner'));
-    } catch (err) {
-        console.warn(chalk.yellow('[ann] banner falló, enviando texto plano:'), err?.message || err);
-        try {
-            await conn.sendMessage(jid, { text, contextInfo: { mentionedJid } });
-            console.log(chalk.green('[ann] ✓ mensaje enviado sin banner'));
-        } catch (err2) {
-            console.error(chalk.red('[ann] sendMessage también falló:'), err2?.message || err2);
+            }),
+            new Promise((_, rej) => setTimeout(
+                () => rej(new Error('Timeout 30s — sendMessage colgado')), 30000
+            )),
+        ]);
+        if (result?.key?.id) {
+            console.log(chalk.green(`[ann] ✓ banner enviado, id: ${result.key.id}`));
+            return result;
         }
+        console.warn(chalk.yellow('[ann] banner enviado pero sin id en la respuesta'));
+        return result;
+    } catch (err) {
+        console.warn(chalk.yellow(`[ann] banner FALLÓ: ${err?.message || err}`));
+    }
+
+    // Intento 2: fallback a mensaje simple con mentions top-level.
+    // Esta forma es la más básica y prácticamente siempre funciona en v7.
+    try {
+        const result = await Promise.race([
+            conn.sendMessage(jid, {
+                text,
+                mentions: mentionedJid,
+            }),
+            new Promise((_, rej) => setTimeout(
+                () => rej(new Error('Timeout 30s — fallback colgado')), 30000
+            )),
+        ]);
+        if (result?.key?.id) {
+            console.log(chalk.green(`[ann] ✓ texto plano enviado, id: ${result.key.id}`));
+        }
+        return result;
+    } catch (err2) {
+        console.error(chalk.red(`[ann] sendMessage FALLÓ COMPLETAMENTE: ${err2?.message || err2}`));
+        return null;
     }
 }
 
@@ -221,9 +256,9 @@ async function onParticipantsUpdate(conn, event) {
                 const adReply = {
                     showAdAttribution: true,
                     containsAutoReply: true,
-                    title:       ANNOUNCEMENT_TEXTS.welcomeTitle,
-                    body:        subject,
-                    previewType: 'PHOTO',
+                    title:        ANNOUNCEMENT_TEXTS.welcomeTitle,
+                    body:         subject,
+                    mediaType:    1, // 1 = imagen (valor numérico del enum, v7-safe)
                     thumbnailUrl: global.imagen1 || sourceUrl,
                     sourceUrl,
                 };
@@ -238,9 +273,9 @@ async function onParticipantsUpdate(conn, event) {
                 const adReply = {
                     showAdAttribution: true,
                     containsAutoReply: true,
-                    title:       ANNOUNCEMENT_TEXTS.byeTitle,
-                    body:        subject,
-                    previewType: 'PHOTO',
+                    title:        ANNOUNCEMENT_TEXTS.byeTitle,
+                    body:         subject,
+                    mediaType:    1,
                     thumbnailUrl: global.imagen1 || sourceUrl,
                     sourceUrl,
                 };
