@@ -1,0 +1,32 @@
+{
+  "name": "kimdanbot-md",
+  "version": "3.0.0",
+  "description": "WhatsApp bot — Baileys v7, ESM, LID-aware",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --max-old-space-size=1024 index.js",
+    "qr": "node --max-old-space-size=1024 index.js qr",
+    "code": "node --max-old-space-size=1024 index.js code",
+    "dev": "nodemon index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "author": "kim",
+  "license": "ISC",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "axios": "^1.7.7",
+    "baileys": "^7.0.0-rc10",
+    "cfonts": "^3.3.0",
+    "chalk": "^4.1.2",
+    "moment-timezone": "^0.5.47",
+    "node-cache": "^5.1.2",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
