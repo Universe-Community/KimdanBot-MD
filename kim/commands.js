@@ -1514,3 +1514,146 @@ export const toggleNotifyChanges = command({
     db.markDirty();
     return m.reply(`${c.notifyGroupChanges ? '✅' : '❌'} Notificación de cambios *${c.notifyGroupChanges ? 'activada' : 'desactivada'}*`);
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// CATEGORÍA: CONFIG — comando .anuncios con todos los toggles
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Un solo comando para controlar TODOS los anuncios automáticos del bot.
+// Jerarquía: master → categoría → individual.
+//
+//   .anuncios                          → muestra el estado actual
+//   .anuncios <opción> <on|off>        → activa/desactiva
+//   .anuncios <opción>                 → toggle
+//
+// Opciones disponibles:
+//   MASTER:     todo, todos
+//   CATEGORÍA:  miembros, grupo
+//   INDIVIDUAL: bienvenida, despedida, admins,
+//               nombre, descripcion, foto, abrircerrar, restriccion
+
+export const anuncios = command({
+    name: 'anuncios', aliases: ['announces', 'avisos'], category: 'config',
+    description: 'Activa/desactiva anuncios automáticos (escribe .anuncios para ver opciones)',
+}, async (conn, m, args) => {
+    if (!needGroupAdmin(m)) return;
+    const c = getChat(m.chat);
+
+    // Mapa: alias del usuario → { key en DB, label legible }
+    const FLAGS = {
+        // ─── MASTER (apaga todos los anuncios del grupo) ───
+        todo:        { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+        todos:       { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+        master:      { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+        all:         { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+
+        // ─── CATEGORÍAS ───
+        miembros:    { key: 'notifyMembers', label: 'Anuncios de miembros', tier: 'category' },
+        members:     { key: 'notifyMembers', label: 'Anuncios de miembros', tier: 'category' },
+        grupo:       { key: 'notifyGroupChanges', label: 'Cambios del grupo', tier: 'category' },
+        cambios:     { key: 'notifyGroupChanges', label: 'Cambios del grupo', tier: 'category' },
+
+        // ─── INDIVIDUALES (miembros) ───
+        bienvenida:  { key: 'welcome', label: 'Bienvenida', tier: 'individual' },
+        welcome:     { key: 'welcome', label: 'Bienvenida', tier: 'individual' },
+        despedida:   { key: 'bye', label: 'Despedida', tier: 'individual' },
+        bye:         { key: 'bye', label: 'Despedida', tier: 'individual' },
+        admins:      { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
+        admin:       { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
+        detect:      { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
+
+        // ─── INDIVIDUALES (cambios del grupo) ───
+        nombre:      { key: 'notifySubject', label: 'Cambio de nombre', tier: 'individual' },
+        subject:     { key: 'notifySubject', label: 'Cambio de nombre', tier: 'individual' },
+        descripcion: { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
+        desc:        { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
+        descripción: { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
+        foto:        { key: 'notifyIcon', label: 'Cambio de foto', tier: 'individual' },
+        icon:        { key: 'notifyIcon', label: 'Cambio de foto', tier: 'individual' },
+        abrircerrar: { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
+        announce:    { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
+        cerrar:      { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
+        abrir:       { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
+        restriccion: { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
+        restricción: { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
+        restrict:    { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
+    };
+
+    // Sin args (o "estado"/"status") → muestra el estado actual
+    const sub = (args[0] || '').toLowerCase();
+    if (!sub || sub === 'estado' || sub === 'status' || sub === 'ver' || sub === 'list') {
+        const yn = (key) => c[key] !== false ? '✅' : '❌';
+        return m.reply(
+`*🌸 Estado de anuncios del grupo 🌸*
+
+*◌ MASTER ◌*
+• Todos los anuncios ${yn('allowAnnouncements')}
+
+*◌ CATEGORÍAS ◌*
+• Miembros ${yn('notifyMembers')}
+• Cambios del grupo ${yn('notifyGroupChanges')}
+
+*◌ MIEMBROS (individual) ◌*
+• Bienvenida ${yn('welcome')}
+• Despedida ${yn('bye')}
+• Admins (promote/demote) ${yn('detect')}
+
+*◌ CAMBIOS DEL GRUPO (individual) ◌*
+• Nombre ${yn('notifySubject')}
+• Descripción ${yn('notifyDesc')}
+• Foto ${yn('notifyIcon')}
+• Abrir/cerrar grupo ${yn('notifyAnnounce')}
+• Restricción de info ${yn('notifyRestrict')}
+
+━━━━━━━━━━━━━━━━━━
+
+*Uso:*
+\`.anuncios <opción> <on|off>\`
+
+*Opciones:*
+\`todo\` · \`miembros\` · \`grupo\`
+\`bienvenida\` · \`despedida\` · \`admins\`
+\`nombre\` · \`descripcion\` · \`foto\`
+\`abrircerrar\` · \`restriccion\`
+
+*Ejemplos:*
+• \`.anuncios todo off\` — apaga TODOS los anuncios
+• \`.anuncios miembros off\` — apaga welcome/bye/admins
+• \`.anuncios grupo off\` — apaga cambios del grupo
+• \`.anuncios bienvenida off\` — solo apaga la bienvenida
+• \`.anuncios foto on\` — solo prende avisos de foto`
+        );
+    }
+
+    const flag = FLAGS[sub];
+    if (!flag) {
+        return m.reply(`❌ Opción no válida: *${sub}*\n\nEscribe *.anuncios* para ver las opciones disponibles.`);
+    }
+
+    // Determinar el nuevo valor
+    const val = (args[1] || '').toLowerCase();
+    let newValue;
+    if (val === 'on' || val === 'activar' || val === '1' || val === 'true' || val === 'si') {
+        newValue = true;
+    } else if (val === 'off' || val === 'desactivar' || val === '0' || val === 'false' || val === 'no') {
+        newValue = false;
+    } else {
+        // Toggle (invierte el estado actual; tratamos undefined como true)
+        newValue = c[flag.key] === false;
+    }
+
+    c[flag.key] = newValue;
+    db.markDirty();
+
+    // Mensaje según el nivel (avisa si apagar el master desactiva todo)
+    let extra = '';
+    if (flag.tier === 'master' && newValue === false) {
+        extra = '\n\n⚠️ *Ningún anuncio del bot se enviará en este grupo hasta que lo vuelvas a activar.*';
+    } else if (flag.tier === 'category' && newValue === false) {
+        extra = `\n\n_Todos los anuncios de esta categoría quedan apagados._`;
+    } else if (newValue === false && c.allowAnnouncements === false) {
+        extra = '\n\n⚠️ Recuerda que el *master* está apagado — ningún anuncio se envía hasta que actives \`.anuncios todo on\`.';
+    }
+
+    return m.reply(`${newValue ? '✅' : '❌'} *${flag.label}* ${newValue ? 'activado' : 'desactivado'}${extra}`);
+});
