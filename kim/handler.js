@@ -78,7 +78,36 @@ export class Handler {
         return this._botLid;
     }
 
-    /** Owner check tolerante a LID y PN. */
+    /**
+     * Owner check tolerante a LID y PN.
+     *
+     * El ownerSet contiene los NÚMEROS DE TELÉFONO del propietario
+     * (de global.owner). El sender puede venir como:
+     *   • PN (xxx@s.whatsapp.net) → numero == teléfono, match directo ✓
+     *   • LID (xxx@lid)           → numero ≠ teléfono, NO match directo
+     *
+     * Para el caso LID, intentamos resolverlo a PN usando lidMapping.
+     */
+    async _isOwnerAsync(jid, jidAlt) {
+        if (this.ownerSet.size === 0) return false;
+        const candidates = new Set();
+        for (const j of [jid, jidAlt].filter(Boolean)) {
+            candidates.add(String(j).split('@')[0]);
+            // Si es LID, intentar resolver a PN
+            if (j.endsWith('@lid')) {
+                try {
+                    const pn = await this.conn?.signalRepository?.lidMapping?.getPNForLID?.(j);
+                    if (pn) candidates.add(String(pn).split('@')[0]);
+                } catch { /* */ }
+            }
+        }
+        for (const num of candidates) {
+            if (num && this.ownerSet.has(num)) return true;
+        }
+        return false;
+    }
+
+    /** Versión sincrónica (retrocompatibilidad). */
     _isOwner(jid, jidAlt) {
         if (this.ownerSet.size === 0) return false;
         const numLid = jid ? String(jid).split('@')[0] : '';
@@ -100,6 +129,55 @@ export class Handler {
             (botJid && admins.includes(botJid)) ||
             (botLid && admins.includes(botLid))
         );
+    }
+
+    /**
+     * Devuelve TODAS las formas conocidas de un JID (PN + LID).
+     * Usa signalRepository.lidMapping de Baileys v7 para resolver el
+     * formato opuesto al que vino. Si el mapping no está disponible,
+     * retorna el JID original.
+     *
+     * Esto es crítico para el admin check: en v7 los admins de la lista
+     * pueden venir en LID, pero el m.sender del usuario que envió el
+     * mensaje puede venir en PN (o al revés). Sin expansión, la
+     * comparación de strings nunca coincide aunque sea el mismo usuario.
+     */
+    async _expandJidVariants(jid) {
+        const out = new Set();
+        if (!jid) return out;
+        out.add(jid);
+        const lm = this.conn?.signalRepository?.lidMapping;
+        if (!lm) return out;
+        try {
+            if (jid.endsWith('@lid') && typeof lm.getPNForLID === 'function') {
+                const pn = await lm.getPNForLID(jid);
+                if (pn) out.add(pn);
+            } else if (jid.endsWith('@s.whatsapp.net') && typeof lm.getLIDForPN === 'function') {
+                const lid = await lm.getLIDForPN(jid);
+                if (lid) out.add(lid);
+            }
+        } catch { /* */ }
+        return out;
+    }
+
+    /** Une las variantes (PN + LID) de TODOS los admins en un único Set. */
+    async _buildAdminVariantSet(admins) {
+        const set = new Set();
+        for (const a of admins || []) {
+            const variants = await this._expandJidVariants(a);
+            for (const v of variants) set.add(v);
+        }
+        return set;
+    }
+
+    /** Une las variantes (PN + LID) del sender en un Set. */
+    async _buildSenderVariantSet(m) {
+        const set = new Set();
+        for (const j of [m.sender, m.senderAlt].filter(Boolean)) {
+            const variants = await this._expandJidVariants(j);
+            for (const v of variants) set.add(v);
+        }
+        return set;
     }
 
     async _getGroupMetadata(jid) {
@@ -205,19 +283,58 @@ export class Handler {
                 ? body.slice(usedPrefix.length).trim().split(/\s+/).slice(1)
                 : [];
             m.text2 = m.args.join(' ');
-            m.isOwner = this._isOwner(m.sender, m.senderAlt) || m.fromMe;
+            m.isOwner = (await this._isOwnerAsync(m.sender, m.senderAlt)) || m.fromMe;
 
             // Metadata de grupo (cacheada) + admin checks LID-AWARE
             if (m.isGroup) {
                 const meta = await this._getGroupMetadata(remoteJid);
                 if (meta) {
+                    // getGroupAdmins ahora recoge id + lid + phoneNumber de
+                    // cada admin (todas las formas conocidas).
                     const admins = getGroupAdmins(meta.participants || []);
-                    m.isBotAdmin = this._isBotAdmin(admins);
-                    m.isSenderAdmin = admins.includes(m.sender) || admins.includes(m.senderAlt);
+
+                    // Expandimos admins y sender con signalRepository.lidMapping
+                    // para que la comparación LID↔PN funcione aunque vengan
+                    // los dos lados en formatos distintos.
+                    const adminSet     = await this._buildAdminVariantSet(admins);
+                    const senderSet    = await this._buildSenderVariantSet(m);
+
+                    // Intersección: ¿alguna variante del sender está entre los admins?
+                    let isSender = false;
+                    for (const s of senderSet) {
+                        if (adminSet.has(s)) { isSender = true; break; }
+                    }
+
+                    // Bot admin: también con expansión LID↔PN
+                    const botJid = this._getBotJid();
+                    const botLid = this._getBotLid();
+                    const botSet = new Set();
+                    for (const j of [botJid, botLid].filter(Boolean)) {
+                        const variants = await this._expandJidVariants(j);
+                        for (const v of variants) botSet.add(v);
+                    }
+                    let isBot = false;
+                    for (const b of botSet) {
+                        if (adminSet.has(b)) { isBot = true; break; }
+                    }
+
+                    m.isBotAdmin    = isBot;
+                    m.isSenderAdmin = isSender;
                     m.groupMetadata = meta;
-                    m.participants = meta.participants;
-                    m.groupAdmins = admins;
-                    m.groupName = meta.subject;
+                    m.participants  = meta.participants;
+                    m.groupAdmins   = admins;
+                    m.groupName     = meta.subject;
+
+                    // Log diagnóstico: si los checks fallan, verás exactamente
+                    // qué hay en cada lado y por qué no coincide.
+                    if (m._isCmd) {
+                        console.log(chalk.gray(
+                            `[perm] sender=[${[...senderSet].join(' | ')}] ` +
+                            `admins=[${[...adminSet].slice(0, 4).join(' | ')}${adminSet.size > 4 ? ' …' : ''}] ` +
+                            `bot=[${[...botSet].join(' | ')}] ` +
+                            `→ isSenderAdmin:${isSender} isBotAdmin:${isBot} isOwner:${m.isOwner}`
+                        ));
+                    }
                 }
             }
 
