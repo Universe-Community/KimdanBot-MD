@@ -13,7 +13,17 @@ const DEFAULT_USER = () => ({
 
 const DEFAULT_CHAT = () => ({
     isBanned: false, welcome: true, bye: true, detect: true, modeadmin: false,
-    notifyGroupChanges: true, antidelete: false, editlog: false,
+    // Anuncios — jerarquía: master → categoría → individual.
+    // Todos arrancan en true; el admin puede apagar lo que no quiera.
+    allowAnnouncements: true,       // master switch (apaga TODO)
+    notifyMembers: true,            // categoría: welcome + bye + promote/demote
+    notifyGroupChanges: true,       // categoría: subject + desc + icon + announce + restrict
+    notifySubject: true,            // cambio de nombre del grupo
+    notifyDesc: true,               // cambio de descripción
+    notifyIcon: true,               // cambio de foto
+    notifyAnnounce: true,           // grupo abierto/cerrado (admins-only o no)
+    notifyRestrict: true,           // restricción de edición de info
+    antidelete: false, editlog: false,
     antilink: false, antilink2: false, antitoxic: false,
     antifake: false, antiarabe: false, antispam: false,
     AntiYoutube: false, AntInstagram: false, AntiFacebook: false,
