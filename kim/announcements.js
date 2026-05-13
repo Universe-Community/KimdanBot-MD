@@ -131,6 +131,68 @@ async function resolveJidForMention(conn, jid) {
     return jid;
 }
 
+/**
+ * Obtiene el nombre para mostrar del usuario (notify / pushName / verifiedName).
+ * Intenta varias fuentes:
+ *   1. groupMetadata.participants — el server suele incluir notify
+ *   2. conn.contacts — caché de contactos del bot
+ *   3. Buscando también por LID/PN equivalente
+ * Si no encuentra nada, retorna null y el caller debe caer al fallback @<número>.
+ */
+function getDisplayName(jid, conn, groupMeta) {
+    if (!jid) return null;
+    const candidates = [jid];
+    // También probar la forma cruzada (si es LID, intentar PN, y viceversa)
+    if (jid.endsWith('@lid')) candidates.push(jid.replace('@lid', '@s.whatsapp.net'));
+    else if (jid.endsWith('@s.whatsapp.net')) candidates.push(jid.replace('@s.whatsapp.net', '@lid'));
+
+    // 1) groupMetadata.participants
+    const participants = groupMeta?.participants;
+    if (Array.isArray(participants)) {
+        for (const c of candidates) {
+            const part = participants.find(p =>
+                p?.id === c || p?.jid === c || p?.lid === c || p?.phoneNumber === c
+            );
+            if (part) {
+                const name = part.notify || part.name || part.verifiedName || part.pushName;
+                if (name && name.trim()) return name.trim();
+            }
+        }
+    }
+
+    // 2) conn.contacts (Map o objeto)
+    if (conn?.contacts) {
+        for (const c of candidates) {
+            let contact = null;
+            if (typeof conn.contacts.get === 'function') contact = conn.contacts.get(c);
+            else if (typeof conn.contacts === 'object') contact = conn.contacts[c];
+            if (contact) {
+                const name = contact.notify || contact.name || contact.verifiedName || contact.pushName;
+                if (name && name.trim()) return name.trim();
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Decide si se debe enviar un anuncio según la jerarquía de flags:
+ *   allowAnnouncements (master) → categoría → individual
+ * Si CUALQUIERA está explícitamente en false, retorna false.
+ * Si todas están en true o undefined, retorna true.
+ *
+ * Uso: shouldAnnounce(chatCfg, 'notifyMembers', 'welcome')
+ */
+function shouldAnnounce(chatCfg, ...flags) {
+    if (!chatCfg) return true;
+    if (chatCfg.allowAnnouncements === false) return false; // master apagado
+    for (const f of flags) {
+        if (chatCfg[f] === false) return false; // categoría o individual apagado
+    }
+    return true;
+}
+
 async function getUserPicBuffer(conn, jid) {
     try {
         const url = await conn.profilePictureUrl(jid, 'image');
@@ -212,7 +274,14 @@ async function onParticipantsUpdate(conn, event) {
     let chatCfg;
     try { chatCfg = getChat(chatJid); }
     catch (err) { console.error(chalk.red('[ann] getChat falló:'), err?.message); return; }
-    console.log(chalk.gray(`[ann] cfg → welcome:${chatCfg.welcome} bye:${chatCfg.bye} detect:${chatCfg.detect}`));
+    console.log(chalk.gray(`[ann] cfg → master:${chatCfg.allowAnnouncements} miembros:${chatCfg.notifyMembers} welcome:${chatCfg.welcome} bye:${chatCfg.bye} detect:${chatCfg.detect}`));
+
+    // Atajo: si todos los anuncios de miembros están apagados, ni siquiera
+    // entremos al bucle. Nos ahorramos fetchear metadata + fotos.
+    if (!shouldAnnounce(chatCfg, 'notifyMembers')) {
+        console.log(chalk.gray('[ann] anuncios de miembros apagados — se omite todo'));
+        return;
+    }
 
     let meta = null;
     try { meta = await conn.groupMetadata(chatJid); }
@@ -247,28 +316,37 @@ async function onParticipantsUpdate(conn, event) {
         const mentions = [numForMention];
         if (isByAdmin && authorForMention) mentions.push(authorForMention);
 
+        // ── FIX MENCIÓN ───────────────────────────────────────────
+        // Las menciones @<número> NO se renderizan como tags clickeables
+        // cuando el JID es un LID (WhatsApp no resuelve LIDs como contactos).
+        // Solución: si tenemos el NOMBRE del usuario, lo mostramos en negrita
+        // en lugar de @<número>. La mención sigue en `mentions` para que el
+        // usuario reciba la notificación, pero el texto se ve limpio.
+        const userName   = getDisplayName(num, conn, meta);
+        const authorName = author ? getDisplayName(author, conn, meta) : null;
+        const userTag    = userName   ? `*${userName}*`   : `@${numClean}`;
+        const authorTag  = authorName ? `*${authorName}*` : (authorClean ? `@${authorClean}` : '');
+
         // Foto de perfil del usuario (será la imagen principal del mensaje)
         const ppBuf = await getUserPicBuffer(conn, num);
 
         try {
             // ═════ BIENVENIDA (3 variantes según quién agregó) ═════
-            if (action === 'add' && chatCfg.welcome !== false) {
+            if (action === 'add' && shouldAnnounce(chatCfg, 'notifyMembers', 'welcome')) {
                 let text;
                 if (isByAdmin) {
-                    // Variante: agregada(o) por un admin del grupo
                     text =
-`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+`🌸 *¡Bienvenida(o) ${userTag}!* 💞
 
-💐 Fuiste agregada(o) al grupo *${subject}* por @${authorClean}.
+💐 Fuiste agregada(o) al grupo *${subject}* por ${authorTag}.
 
 🍓 Soy *${botName}*, el bot kawaii del grupo (✿❛◡❛)
 
 📰 Por favor lee la *descripción del grupo* y sigue las reglas.
 ✨(♡´▽\`♡)✨`;
                 } else if (isByBot) {
-                    // Variante: agregada(o) por el bot vía comando
                     text =
-`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+`🌸 *¡Bienvenida(o) ${userTag}!* 💞
 
 💐 Fuiste agregada(o) al grupo *${subject}*.
 
@@ -279,7 +357,7 @@ async function onParticipantsUpdate(conn, event) {
                 } else {
                     // Variante: se unió por sí misma(o) (link de invitación)
                     text =
-`🌸 *¡Bienvenida(o) @${numClean}!* 💞
+`🌸 *¡Bienvenida(o) ${userTag}!* 💞
 
 💐 Te uniste al grupo *${subject}*.
 
@@ -293,26 +371,23 @@ async function onParticipantsUpdate(conn, event) {
             }
 
             // ═════ DESPEDIDA (3 variantes según quién removió) ═════
-            else if (action === 'remove' && chatCfg.bye !== false) {
+            else if (action === 'remove' && shouldAnnounce(chatCfg, 'notifyMembers', 'bye')) {
                 let text;
                 if (isByAdmin) {
-                    // Expulsada(o) por un admin del grupo
                     text =
-`❌ *@${numClean} fue expulsada(o) del grupo* 🍇
+`❌ *${userTag} fue expulsada(o) del grupo* 🍇
 
-🫐 Acción realizada por @${authorClean}.
+🫐 Acción realizada por ${authorTag}.
 👋 Hasta luego.`;
                 } else if (isByBot) {
-                    // Expulsada(o) por el bot vía comando .kick
                     text =
-`❌ *@${numClean} fue expulsada(o) del grupo* 🍇
+`❌ *${userTag} fue expulsada(o) del grupo* 🍇
 
 🤖 Acción realizada por el bot.
 👋 Hasta luego.`;
                 } else {
-                    // Se fue por su propia cuenta
                     text =
-`👋 *@${numClean} salió del grupo* 🍇
+`👋 *${userTag} salió del grupo* 🍇
 
 🍬 Gracias por los buenos momentos.
 ✨ Fue un placer conocerte.
@@ -322,28 +397,28 @@ async function onParticipantsUpdate(conn, event) {
             }
 
             // ═════ ASCENSO A ADMIN ═════════════════════════════════
-            else if (action === 'promote' && chatCfg.detect !== false) {
+            else if (action === 'promote' && shouldAnnounce(chatCfg, 'notifyMembers', 'detect')) {
                 const text = isByAdmin
                     ? `⭐ *¡Nuevo administrador!* 🎉
 
-🌟 *@${numClean}* ahora es admin del grupo.
-🌼 Promoción otorgada por *@${authorClean}*.`
+🌟 ${userTag} ahora es admin del grupo.
+🌼 Promoción otorgada por ${authorTag}.`
                     : `⭐ *¡Nuevo administrador!* 🎉
 
-🌟 *@${numClean}* ahora es admin del grupo.`;
+🌟 ${userTag} ahora es admin del grupo.`;
                 await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'promote');
             }
 
             // ═════ DEGRADACIÓN DE ADMIN ════════════════════════════
-            else if (action === 'demote' && chatCfg.detect !== false) {
+            else if (action === 'demote' && shouldAnnounce(chatCfg, 'notifyMembers', 'detect')) {
                 const text = isByAdmin
                     ? `🍃 *Un admin menos* 🫐
 
-❄ *@${numClean}* ya no es admin del grupo.
-🌼 Acción realizada por *@${authorClean}*.`
+❄ ${userTag} ya no es admin del grupo.
+🌼 Acción realizada por ${authorTag}.`
                     : `🍃 *Un admin menos* 🫐
 
-❄ *@${numClean}* ya no es admin del grupo.`;
+❄ ${userTag} ya no es admin del grupo.`;
                 await sendAnnouncement(conn, chatJid, text, mentions, ppBuf, 'demote');
             }
 
@@ -370,35 +445,44 @@ async function onGroupsUpdate(conn, updates) {
         ));
 
         const chatCfg = getChat(u.id);
-        if (chatCfg.notifyGroupChanges === false) continue;
+        // Atajo: si la categoría completa está apagada, salimos.
+        if (!shouldAnnounce(chatCfg, 'notifyGroupChanges')) continue;
 
         try {
             let txt = null;
 
-            // CAMBIOS DE CONFIGURACIÓN (los que faltaban):
-            //   announce: true  = grupo cerrado (solo admins escriben)
-            //   announce: false = grupo abierto
-            //   restrict: true  = solo admins editan info del grupo
-            //   restrict: false = todos editan info
+            // CAMBIOS DE CONFIGURACIÓN — cada uno consulta su flag individual:
+            //   announce  → notifyAnnounce (grupo abierto/cerrado)
+            //   restrict  → notifyRestrict (quién puede editar info)
             if (u.announce === true) {
+                if (!shouldAnnounce(chatCfg, 'notifyAnnounce')) continue;
                 txt = ANNOUNCEMENT_TEXTS.groupClose;
             } else if (u.announce === false) {
+                if (!shouldAnnounce(chatCfg, 'notifyAnnounce')) continue;
                 txt = ANNOUNCEMENT_TEXTS.groupOpen;
             } else if (u.restrict === true) {
+                if (!shouldAnnounce(chatCfg, 'notifyRestrict')) continue;
                 txt = `*✿═══━ ❀ ━═══✿*\n*🔒 𝐂𝐨𝐧𝐟𝐢𝐠𝐮𝐫𝐚𝐜𝐢𝐨́𝐧 𝐝𝐞 𝐠𝐫𝐮𝐩𝐨 𝐀𝐂𝐓𝐔𝐀𝐋𝐈𝐙𝐀𝐃𝐀 🔒*\n*✿═══━ ❀ ━═══✿*\n\n*🌺 Solo los admins pueden editar la info del grupo.*`;
             } else if (u.restrict === false) {
+                if (!shouldAnnounce(chatCfg, 'notifyRestrict')) continue;
                 txt = `*✿═══━ ❀ ━═══✿*\n*🌸 𝐂𝐨𝐧𝐟𝐢𝐠𝐮𝐫𝐚𝐜𝐢𝐨́𝐧 𝐝𝐞 𝐠𝐫𝐮𝐩𝐨 𝐀𝐂𝐓𝐔𝐀𝐋𝐈𝐙𝐀𝐃𝐀 🌸*\n*✿═══━ ❀ ━═══✿*\n\n*💐 Todos pueden editar la info del grupo.*`;
             }
 
-            // CAMBIOS DE METADATA:
+            // CAMBIOS DE METADATA — flags individuales:
+            //   subject → notifySubject (nombre)
+            //   desc    → notifyDesc    (descripción)
+            //   icon    → notifyIcon    (foto)
             else if (u.subject !== undefined && u.subject !== null) {
+                if (!shouldAnnounce(chatCfg, 'notifySubject')) continue;
                 txt = `${ANNOUNCEMENT_TEXTS.subjectChange}\n\n*Nuevo nombre:* ${u.subject}`;
             } else if (u.desc !== undefined) {
+                if (!shouldAnnounce(chatCfg, 'notifyDesc')) continue;
                 txt = `${ANNOUNCEMENT_TEXTS.descChange}${u.desc ? '\n\n*Nueva descripción:*\n' + u.desc : '\n\n(descripción vacía)'}`;
             } else if (u.icon !== undefined) {
                 // Foto cambió: invalida el cache para que la próxima
                 // bienvenida use la nueva foto.
                 invalidateGroupPic(u.id);
+                if (!shouldAnnounce(chatCfg, 'notifyIcon')) continue;
                 txt = ANNOUNCEMENT_TEXTS.iconChange;
             }
 
