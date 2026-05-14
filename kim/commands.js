@@ -1006,7 +1006,7 @@ if ((quoted.msg || quoted).seconds > 20) return m. reply('✾⃛⃛ᬿ⃝⃞🚫
 media = await quoted.download()  
 let encmedia = await conn.sendVideoAsSticker(m.chat, media, m, { packname: global.packname, author: global.author })
 } else {  
-m.reply(`✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _🌺𝐑𝐄𝐒𝐏𝐎𝐍𝐃𝐄 𝐀 𝐔𝐍𝐀 𝐈𝐌𝐀𝐆𝐄𝐍 /𝐕𝐈𝐃𝐄𝐎_`)}}  
+m.reply(`✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _🌺𝐑𝐄𝐒𝐏𝐎𝐍𝐃𝐄 𝐀 𝐔𝐍𝐀 𝐈𝐌𝐀𝐆𝐄𝐍 /𝐕𝐈𝐃𝐄𝐎_`)}};  
 
             case 'attp': {
                 if (!text) return m.reply('Uso: .attp <texto>');
