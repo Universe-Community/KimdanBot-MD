@@ -23,7 +23,6 @@ import { getUser, getChat, getSettings, db } from './db.js';
 
 const MAX_REPLY = 4000;
 const truncate = (s) => s.length > MAX_REPLY ? s.slice(0, MAX_REPLY) + '\n[…truncado]' : s;
-const quoted = m.quoted ? m.quoted : m;
 
 // ═══════════════════════════════════════════════════════════════════════
 // HELPERS DE PERMISOS
@@ -243,37 +242,6 @@ const ALIAS_MAP = (() => {
     }
     return map;
 })();
-
-// ─── Tabla de toggles per-chat (18 cases colapsados en uno) ────────────
-// Solo cambia el flag de DB y el label del mensaje.
-const CHAT_TOGGLES = {
-    antilink:      { key: 'antilink',           label: 'Antilink' },
-    antilinkyt:    { key: 'AntiYoutube',        label: 'Anti YouTube' },
-    antilinkig:    { key: 'AntInstagram',       label: 'Anti Instagram' },
-    antilinkfb:    { key: 'AntiFacebook',       label: 'Anti Facebook' },
-    antilinktt:    { key: 'AntiTiktok',         label: 'Anti TikTok' },
-    antilinktw:    { key: 'AntiTwitter',        label: 'Anti Twitter/X' },
-    antilinktg:    { key: 'AntiTelegram',       label: 'Anti Telegram' },
-    antitoxic:     { key: 'antitoxic',          label: 'Antitoxic' },
-    antifake:      { key: 'antifake',           label: 'Antifake' },
-    antispam:      { key: 'antispam',           label: 'Antispam' },
-    welcome:       { key: 'welcome',            label: 'Bienvenida' },
-    modeadmin:     { key: 'modeadmin',          label: 'Modo solo-admins' },
-    autosticker:   { key: 'autosticker',        label: 'Autosticker' },
-    bye:           { key: 'bye',                label: 'Mensaje de despedida' },
-    detect:        { key: 'detect',             label: 'Avisos promote/demote' },
-    antidelete:    { key: 'antidelete',         label: 'Anti-delete' },
-    editlog:       { key: 'editlog',            label: 'Edit-log' },
-    notifychanges: { key: 'notifyGroupChanges', label: 'Notificación de cambios' },
-};
-
-// ─── Tabla de comandos % (gay/toxic/fake/racista) ──────────────────────
-const PERCENT_CMDS = {
-    gay:     { label: 'gay 🌈',     emoji: '🌈' },
-    toxic:   { label: 'tóxico ☠️',  emoji: '☠️' },
-    fake:    { label: 'fake 🎭',    emoji: '🎭' },
-    racista: { label: 'racista 🙄', emoji: '🙄' },
-};
 
 // ═══════════════════════════════════════════════════════════════════════
 // EXECUTE — despachador principal con switch/case/break
@@ -572,35 +540,222 @@ export async function execute(conn, m, rawCommand, args, text) {
             }
 
             // ═════════════════ CONFIG: per-chat toggles ═════════════════
-            // 18 cases con la misma lógica — solo cambia el flag y el label.
+            // 18 cases — uno por toggle, con su lógica explícita.
+            // Cada uno: chequea admin → lee/escribe su flag → confirma.
 
-            case 'antilink':
-            case 'antilinkyt':
-            case 'antilinkig':
-            case 'antilinkfb':
-            case 'antilinktt':
-            case 'antilinktw':
-            case 'antilinktg':
-            case 'antitoxic':
-            case 'antifake':
-            case 'antispam':
-            case 'welcome':
-            case 'modeadmin':
-            case 'autosticker':
-            case 'bye':
-            case 'detect':
-            case 'antidelete':
-            case 'editlog':
-            case 'notifychanges': {
+            case 'antilink': {
                 if (!needGroupAdmin(m)) return;
-                const def = CHAT_TOGGLES[cmd];
                 const c = getChat(m.chat);
                 const arg = (args[0] || '').toLowerCase();
-                if (arg === 'on') c[def.key] = true;
-                else if (arg === 'off') c[def.key] = false;
-                else c[def.key] = !c[def.key];
+                if (arg === 'on') c.antilink = true;
+                else if (arg === 'off') c.antilink = false;
+                else c.antilink = !c.antilink;
                 db.markDirty();
-                await m.reply(`${c[def.key] ? '✅' : '❌'} ${def.label} *${c[def.key] ? 'activado' : 'desactivado'}*`);
+                await m.reply(`${c.antilink ? '✅' : '❌'} Antilink *${c.antilink ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinkyt': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntiYoutube = true;
+                else if (arg === 'off') c.AntiYoutube = false;
+                else c.AntiYoutube = !c.AntiYoutube;
+                db.markDirty();
+                await m.reply(`${c.AntiYoutube ? '✅' : '❌'} Anti YouTube *${c.AntiYoutube ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinkig': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntInstagram = true;
+                else if (arg === 'off') c.AntInstagram = false;
+                else c.AntInstagram = !c.AntInstagram;
+                db.markDirty();
+                await m.reply(`${c.AntInstagram ? '✅' : '❌'} Anti Instagram *${c.AntInstagram ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinkfb': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntiFacebook = true;
+                else if (arg === 'off') c.AntiFacebook = false;
+                else c.AntiFacebook = !c.AntiFacebook;
+                db.markDirty();
+                await m.reply(`${c.AntiFacebook ? '✅' : '❌'} Anti Facebook *${c.AntiFacebook ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinktt': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntiTiktok = true;
+                else if (arg === 'off') c.AntiTiktok = false;
+                else c.AntiTiktok = !c.AntiTiktok;
+                db.markDirty();
+                await m.reply(`${c.AntiTiktok ? '✅' : '❌'} Anti TikTok *${c.AntiTiktok ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinktw': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntiTwitter = true;
+                else if (arg === 'off') c.AntiTwitter = false;
+                else c.AntiTwitter = !c.AntiTwitter;
+                db.markDirty();
+                await m.reply(`${c.AntiTwitter ? '✅' : '❌'} Anti Twitter/X *${c.AntiTwitter ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antilinktg': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.AntiTelegram = true;
+                else if (arg === 'off') c.AntiTelegram = false;
+                else c.AntiTelegram = !c.AntiTelegram;
+                db.markDirty();
+                await m.reply(`${c.AntiTelegram ? '✅' : '❌'} Anti Telegram *${c.AntiTelegram ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antitoxic': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.antitoxic = true;
+                else if (arg === 'off') c.antitoxic = false;
+                else c.antitoxic = !c.antitoxic;
+                db.markDirty();
+                await m.reply(`${c.antitoxic ? '✅' : '❌'} Antitoxic *${c.antitoxic ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antifake': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.antifake = true;
+                else if (arg === 'off') c.antifake = false;
+                else c.antifake = !c.antifake;
+                db.markDirty();
+                await m.reply(`${c.antifake ? '✅' : '❌'} Antifake *${c.antifake ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antispam': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.antispam = true;
+                else if (arg === 'off') c.antispam = false;
+                else c.antispam = !c.antispam;
+                db.markDirty();
+                await m.reply(`${c.antispam ? '✅' : '❌'} Antispam *${c.antispam ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'welcome': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.welcome = true;
+                else if (arg === 'off') c.welcome = false;
+                else c.welcome = !c.welcome;
+                db.markDirty();
+                await m.reply(`${c.welcome ? '✅' : '❌'} Bienvenida *${c.welcome ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'modeadmin': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.modeadmin = true;
+                else if (arg === 'off') c.modeadmin = false;
+                else c.modeadmin = !c.modeadmin;
+                db.markDirty();
+                await m.reply(`${c.modeadmin ? '✅' : '❌'} Modo solo-admins *${c.modeadmin ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'autosticker': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.autosticker = true;
+                else if (arg === 'off') c.autosticker = false;
+                else c.autosticker = !c.autosticker;
+                db.markDirty();
+                await m.reply(`${c.autosticker ? '✅' : '❌'} Autosticker *${c.autosticker ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'bye': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.bye = true;
+                else if (arg === 'off') c.bye = false;
+                else c.bye = !c.bye;
+                db.markDirty();
+                await m.reply(`${c.bye ? '✅' : '❌'} Mensaje de despedida *${c.bye ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'detect': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.detect = true;
+                else if (arg === 'off') c.detect = false;
+                else c.detect = !c.detect;
+                db.markDirty();
+                await m.reply(`${c.detect ? '✅' : '❌'} Avisos promote/demote *${c.detect ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antidelete': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.antidelete = true;
+                else if (arg === 'off') c.antidelete = false;
+                else c.antidelete = !c.antidelete;
+                db.markDirty();
+                await m.reply(`${c.antidelete ? '✅' : '❌'} Anti-delete *${c.antidelete ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'editlog': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.editlog = true;
+                else if (arg === 'off') c.editlog = false;
+                else c.editlog = !c.editlog;
+                db.markDirty();
+                await m.reply(`${c.editlog ? '✅' : '❌'} Edit-log *${c.editlog ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'notifychanges': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c.notifyGroupChanges = true;
+                else if (arg === 'off') c.notifyGroupChanges = false;
+                else c.notifyGroupChanges = !c.notifyGroupChanges;
+                db.markDirty();
+                await m.reply(`${c.notifyGroupChanges ? '✅' : '❌'} Notificación de cambios *${c.notifyGroupChanges ? 'activado' : 'desactivado'}*`);
                 break;
             }
 
@@ -1451,18 +1606,49 @@ m.reply(`✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _🌺𝐑𝐄
                 break;
             }
 
-            // 4 cases idénticos — solo cambia el label/emoji (PERCENT_CMDS)
-            case 'gay':
-            case 'toxic':
-            case 'fake':
-            case 'racista': {
-                const def = PERCENT_CMDS[cmd];
+            case 'gay': {
                 const tgt = m.mentionedJid?.[0]
                     ? `@${m.mentionedJid[0].split('@')[0]}`
                     : (text || m.pushName || 'tú');
                 const pct = Math.floor(Math.random() * 101);
                 await conn.sendMessage(m.chat, {
-                    text: `${def.emoji} ${tgt} es ${pct}% ${def.label}`,
+                    text: `🌈 ${tgt} es ${pct}% gay 🌈`,
+                    mentions: m.mentionedJid || [],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'toxic': {
+                const tgt = m.mentionedJid?.[0]
+                    ? `@${m.mentionedJid[0].split('@')[0]}`
+                    : (text || m.pushName || 'tú');
+                const pct = Math.floor(Math.random() * 101);
+                await conn.sendMessage(m.chat, {
+                    text: `☠️ ${tgt} es ${pct}% tóxico ☠️`,
+                    mentions: m.mentionedJid || [],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'fake': {
+                const tgt = m.mentionedJid?.[0]
+                    ? `@${m.mentionedJid[0].split('@')[0]}`
+                    : (text || m.pushName || 'tú');
+                const pct = Math.floor(Math.random() * 101);
+                await conn.sendMessage(m.chat, {
+                    text: `🎭 ${tgt} es ${pct}% fake 🎭`,
+                    mentions: m.mentionedJid || [],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'racista': {
+                const tgt = m.mentionedJid?.[0]
+                    ? `@${m.mentionedJid[0].split('@')[0]}`
+                    : (text || m.pushName || 'tú');
+                const pct = Math.floor(Math.random() * 101);
+                await conn.sendMessage(m.chat, {
+                    text: `🙄 ${tgt} es ${pct}% racista 🙄`,
                     mentions: m.mentionedJid || [],
                 }, { quoted: m });
                 break;
