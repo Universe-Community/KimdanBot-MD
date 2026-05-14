@@ -1148,6 +1148,7 @@ export async function execute(conn, m, rawCommand, args, text) {
             // ═════════════════ STICKER / MEDIA ═════════════════
 
             case 's': {
+                 const target = m.quoted || m;
                const quoted = m.quoted ? m.quoted : m;
                 const mime = target.msg?.mimetype || target.mimetype || '';
                 if (/image/.test(mime)) {  
