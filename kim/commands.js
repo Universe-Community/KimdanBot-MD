@@ -994,18 +994,18 @@ export async function execute(conn, m, rawCommand, args, text) {
             case 's': {
                 const target = m.quoted || m;
                 const mime = target.msg?.mimetype || target.mimetype || '';
-                if (!/^(image|video|webp)/.test(mime)) {
-                    return m.reply('🎀 Responde a una imagen o video corto con el comando.');
-                }
-                if (mime.startsWith('video') && (target.msg?.seconds || 0) > 10) {
-                    return m.reply('⏳ El video debe durar máximo 10 segundos.');
-                }
-                try {
-                    const buffer = await target.download();
-                    await conn.sendMessage(m.chat, { sticker: buffer }, { quoted: m });
-                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-                break;
-            }
+                if (/image/.test(mime)) {  
+               m.reply(mess.wait)  
+media = await quoted.download()  
+let encmedia = await conn.sendImageAsSticker(m.chat, media, m, { packname: global.packname, author: global.author })
+  await fs.unlinkSync(encmedia)  
+} else if (/video/.test(mime)) {  
+  await conn.sendMessage(from, {text: info.result, edit: key}, { quoted: fkontak })
+if ((quoted.msg || quoted).seconds > 20) return m. reply('✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _⏳𝐌𝐀́𝐗𝐈𝐌𝐎 𝟐𝟎 𝐒𝐄𝐆𝐔𝐍𝐃𝐎𝐒 ⏳_')  
+media = await quoted.download()  
+let encmedia = await conn.sendVideoAsSticker(m.chat, media, m, { packname: global.packname, author: global.author })
+} else {  
+m.reply(`✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _🌺𝐑𝐄𝐒𝐏𝐎𝐍𝐃𝐄 𝐀 𝐔𝐍𝐀 𝐈𝐌𝐀𝐆𝐄𝐍 /𝐕𝐈𝐃𝐄𝐎_`)}}  
 
             case 'attp': {
                 if (!text) return m.reply('Uso: .attp <texto>');
