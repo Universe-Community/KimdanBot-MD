@@ -23,6 +23,7 @@ import { getUser, getChat, getSettings, db } from './db.js';
 
 const MAX_REPLY = 4000;
 const truncate = (s) => s.length > MAX_REPLY ? s.slice(0, MAX_REPLY) + '\n[…truncado]' : s;
+const quoted = m.quoted ? m.quoted : m;
 
 // ═══════════════════════════════════════════════════════════════════════
 // HELPERS DE PERMISOS
