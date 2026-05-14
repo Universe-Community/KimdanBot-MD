@@ -774,7 +774,7 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'promote': {
                 needGroupAdmin(m);
-                needBotAdmin(m));
+                needBotAdmin(m);
                 const t = resolveTarget(m, text);
                 if (!t) return m.reply('Menciona o cita al usuario.');
                 try {
