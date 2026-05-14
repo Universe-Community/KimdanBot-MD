@@ -1,15 +1,15 @@
-// kim/commands.js — Todos los comandos del bot (ESM, Baileys v7).
+// kim/commands.js — Despachador switch/case/break con permisos centralizados.
 //
-// Cada comando se autorregistra con metadata. El menú se construye
-// automáticamente a partir de este registro. Para agregar un comando
-// nuevo, defínelo aquí con su categoría y aparecerá solo en .menu.
+// TODA la lógica de comandos vive en una sola función execute().
+// Cada comando es un `case` con su check de permiso y su body.
+// Las aliases se normalizan al nombre canónico (primer nombre del array
+// `names` en COMMAND_META) ANTES del switch.
 //
-// Firma estándar:
-//   async function nombre(conn, m, args, text)
-//     - conn: socket Baileys (con serializeConn ya aplicado)
-//     - m: mensaje serializado (m.chat, m.sender, m.reply, m.isOwner, ...)
-//     - args: array de palabras después del comando
-//     - text: args.join(' ')
+// Compatibilidad con handler.js sin tocarlo:
+//   - Al final del archivo, un loop registra cada comando en el registry
+//     con un wrapper que llama execute(). Así el cmdMap del handler
+//     sigue funcionando sin cambios.
+//   - Owner shortcuts (>, =>, $) se exportan como evalSync/evalAsync/shell.
 
 import { execSync } from 'child_process';
 import util from 'util';
@@ -18,33 +18,57 @@ import moment from 'moment-timezone';
 import axios from 'axios';
 
 import { command, buildMenu, commandCount, aliasCount } from './registry.js';
-import { runtime, getBuffer, isUrl, parseMention } from './helpers.js';
+import { runtime, getBuffer, isUrl } from './helpers.js';
 import { getUser, getChat, getSettings, db } from './db.js';
 
 const MAX_REPLY = 4000;
 const truncate = (s) => s.length > MAX_REPLY ? s.slice(0, MAX_REPLY) + '\n[…truncado]' : s;
 
-// ─── Helpers de permisos ─────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// HELPERS DE PERMISOS
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Chequean los flags que el handler setea ANTES de despachar:
+//   - m.isGroup       — según el JID del chat (smsg)
+//   - m.isSenderAdmin — handler con expansión LID↔PN
+//   - m.isBotAdmin    — handler con expansión LID↔PN
+//   - m.isOwner       — handler con resolución LID→PN
+//
+// Si el helper devuelve false, envía mensaje de error y el case `return`.
 
 const needGroup = (m) => {
-    if (!m.isGroup) { m.reply(global.mess?.group || '⚠️ Solo en grupos.'); return false; }
-    return true;
-};
-const needGroupAdmin = (m) => {
-    if (!needGroup(m)) return false;
-    if (!m.isSenderAdmin && !m.isOwner) { m.reply(global.mess?.admin || '⚠️ Solo administradores.'); return false; }
-    return true;
-};
-const needBotAdmin = (m) => {
-    if (!m.isBotAdmin) { m.reply(global.mess?.botAdmin || '⚠️ Necesito ser admin del grupo.'); return false; }
-    return true;
-};
-const needOwner = (m) => {
-    if (!m.isOwner) { m.reply(global.mess?.owner || '⚠️ Solo el propietario.'); return false; }
+    if (!m.isGroup) {
+        m.reply(global.mess?.group || '⚠️ Solo en grupos.');
+        return false;
+    }
     return true;
 };
 
-// Resuelve un target user (mencionado, citado o por texto/número)
+const needGroupAdmin = (m) => {
+    if (!needGroup(m)) return false;
+    if (!m.isSenderAdmin && !m.isOwner) {
+        m.reply(global.mess?.admin || '⚠️ Solo administradores.');
+        return false;
+    }
+    return true;
+};
+
+const needBotAdmin = (m) => {
+    if (!m.isBotAdmin) {
+        m.reply(global.mess?.botAdmin || '⚠️ Necesito ser admin del grupo.');
+        return false;
+    }
+    return true;
+};
+
+const needOwner = (m) => {
+    if (!m.isOwner) {
+        m.reply(global.mess?.owner || '⚠️ Solo el propietario.');
+        return false;
+    }
+    return true;
+};
+
 const resolveTarget = (m, text) => {
     if (m.mentionedJid?.[0]) return m.mentionedJid[0];
     if (m.quoted?.sender) return m.quoted.sender;
@@ -55,31 +79,230 @@ const resolveTarget = (m, text) => {
     return null;
 };
 
+// Si retorna true, el case llamador debe hacer `return`.
+const cooldown = (m, key, durationMs) => {
+    const u = getUser(m.sender);
+    const last = u[key] || 0;
+    const left = durationMs - (Date.now() - last);
+    if (left > 0) {
+        const min = Math.ceil(left / 60000);
+        m.reply(`⏱ Espera *${min} min* antes de volver a usar este comando.`);
+        return true;
+    }
+    return false;
+};
+
 // ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: INFO
+// COMMAND_META — fuente única para menú, aliases y dispatch
+// ═══════════════════════════════════════════════════════════════════════
+// names[0] = nombre canónico (case en el switch); names[1..N] = aliases
+
+const COMMAND_META = [
+    // ─── INFO ───
+    { names: ['ping', 'test'], category: 'info', description: 'Mide la latencia del bot' },
+    { names: ['menu', 'help', 'menu1'], category: 'info', description: 'Lista de comandos' },
+    { names: ['info', 'infobot', 'infokim'], category: 'info', description: 'Información del bot' },
+    { names: ['estado', 'status', 'heydan'], category: 'info', description: 'Estado del sistema' },
+    { names: ['runtime', 'uptime'], category: 'info', description: 'Tiempo activo del bot' },
+    { names: ['creador', 'owner', 'dono'], category: 'info', description: 'Datos del creador' },
+    { names: ['donar', 'donacion', 'donate'], category: 'info', description: 'Información de donaciones' },
+    { names: ['canales', 'cuentaskim', 'cuentas'], category: 'info', description: 'Canales oficiales' },
+    { names: ['grupos', 'gruposkim'], category: 'info', description: 'Grupos oficiales' },
+    { names: ['colaboradores'], category: 'info', description: 'Equipo del bot' },
+
+    // ─── OWNER ───
+    { names: ['eval'], category: 'owner', description: 'Ejecuta JS (eval sync)' },
+    { names: ['evala', 'evalasync'], category: 'owner', description: 'Ejecuta JS (eval async)' },
+    { names: ['shell', 'bash', 'cmd'], category: 'owner', description: 'Ejecuta un comando shell' },
+    { names: ['restart', 'reiniciar'], category: 'owner', description: 'Reinicia el bot' },
+    { names: ['public'], category: 'owner', description: 'Modo público' },
+    { names: ['private'], category: 'owner', description: 'Modo privado (solo owners)' },
+    { names: ['banuser', 'baner'], category: 'owner', description: 'Banea a un usuario del bot' },
+    { names: ['unbanuser'], category: 'owner', description: 'Desbanea usuario' },
+    { names: ['banchat'], category: 'owner', description: 'Banea chat actual' },
+    { names: ['unbanchat'], category: 'owner', description: 'Desbanea chat' },
+    { names: ['setbio', 'setstatus', 'setbiobot'], category: 'owner', description: 'Cambia la bio del bot' },
+    { names: ['setnamebot', 'setnameb'], category: 'owner', description: 'Cambia el nombre del bot' },
+    { names: ['block'], category: 'owner', description: 'Bloquea a un usuario' },
+    { names: ['unblock'], category: 'owner', description: 'Desbloquea usuario' },
+    { names: ['setppbot'], category: 'owner', description: 'Cambia la foto del bot' },
+    { names: ['creargrupo', 'groupcreate'], category: 'owner', description: 'Crea un grupo nuevo' },
+
+    // ─── CONFIG: toggles per-chat (admin del grupo) ───
+    { names: ['antilink'], category: 'config', description: 'Borra links de grupos WhatsApp' },
+    { names: ['antilinkyt', 'antiyt'], category: 'config', description: 'Borra links de YouTube' },
+    { names: ['antilinkig', 'antiig'], category: 'config', description: 'Borra links de Instagram' },
+    { names: ['antilinkfb', 'antifb'], category: 'config', description: 'Borra links de Facebook' },
+    { names: ['antilinktt', 'antitt'], category: 'config', description: 'Borra links de TikTok' },
+    { names: ['antilinktw', 'antitw'], category: 'config', description: 'Borra links de Twitter/X' },
+    { names: ['antilinktg', 'antitg'], category: 'config', description: 'Borra links de Telegram' },
+    { names: ['antitoxic'], category: 'config', description: 'Borra palabras tóxicas' },
+    { names: ['antifake'], category: 'config', description: 'Expulsa números fake' },
+    { names: ['antispam'], category: 'config', description: 'Rate-limit de comandos' },
+    { names: ['welcome'], category: 'config', description: 'Mensajes de bienvenida' },
+    { names: ['modeadmin'], category: 'config', description: 'Solo admins usan comandos' },
+    { names: ['autosticker', 'autosic'], category: 'config', description: 'Auto-stickeriza imágenes' },
+    { names: ['bye', 'despedida'], category: 'config', description: 'Mensaje de despedida' },
+    { names: ['detect', 'anunciaradmins'], category: 'config', description: 'Avisos promote/demote' },
+    { names: ['antidelete', 'antideleted'], category: 'config', description: 'Recupera mensajes borrados' },
+    { names: ['editlog', 'antieedit'], category: 'config', description: 'Log de mensajes editados' },
+    { names: ['notifychanges', 'avisocambios'], category: 'config', description: 'Avisos de cambios del grupo' },
+    // ─── CONFIG: settings globales / owner ───
+    { names: ['antiprivado', 'antipv'], category: 'config', description: 'Bloquea el chat privado a no-owners' },
+    { names: ['antillamada', 'anticall'], category: 'config', description: 'Rechaza llamadas automáticas' },
+    { names: ['bloquearllamada', 'blockcall'], category: 'config', description: 'Además rechaza, bloquea al que llama' },
+    { names: ['anuncios', 'announces', 'avisos'], category: 'config', description: 'Configura anuncios automáticos' },
+
+    // ─── GROUP ───
+    { names: ['kick', 'echar', 'sacar'], category: 'group', description: 'Expulsa a un usuario' },
+    { names: ['add', 'agregar', 'invitar'], category: 'group', description: 'Agrega un número al grupo' },
+    { names: ['promote', 'daradmin'], category: 'group', description: 'Da admin a un usuario' },
+    { names: ['demote', 'quitaradmin'], category: 'group', description: 'Quita admin a un usuario' },
+    { names: ['link', 'linkgc', 'linkgroup'], category: 'group', description: 'Link de invitación del grupo' },
+    { names: ['revoke', 'resetlink', 'anularlink'], category: 'group', description: 'Revoca el link' },
+    { names: ['hidetag', 'notificar'], category: 'group', description: 'Menciona a todos sin mostrarlos' },
+    { names: ['tagall', 'invocar', 'todos'], category: 'group', description: 'Etiqueta a todos' },
+    { names: ['del', 'delete'], category: 'group', description: 'Elimina el mensaje citado' },
+    { names: ['admins', 'administradores'], category: 'group', description: 'Lista de administradores' },
+    { names: ['infogrupo', 'groupinfo'], category: 'group', description: 'Info del grupo' },
+    { names: ['setname', 'setnameg', 'setnombre'], category: 'group', description: 'Cambia el nombre del grupo' },
+    { names: ['setdesc', 'setdescripcion', 'descripcion'], category: 'group', description: 'Cambia la descripción' },
+    { names: ['warn', 'advertencia'], category: 'group', description: 'Advierte a un usuario' },
+    { names: ['unwarn', 'quitardvertencia'], category: 'group', description: 'Quita una advertencia' },
+    { names: ['listwarn'], category: 'group', description: 'Lista usuarios con advertencias' },
+    { names: ['grupo'], category: 'group', description: 'Abre/cierra el grupo' },
+    { names: ['setppgrupo', 'setppgroup', 'setppg'], category: 'group', description: 'Cambia la foto del grupo' },
+    { names: ['encuesta', 'poll'], category: 'group', description: 'Crea una encuesta' },
+
+    // ─── STICKER / MEDIA ───
+    { names: ['s', 'sticker'], category: 'sticker', description: 'Convierte imagen/video en sticker' },
+    { names: ['attp'], category: 'sticker', description: 'Sticker animado con texto' },
+    { names: ['toimg', 'toimagen'], category: 'sticker', description: 'Convierte sticker en imagen' },
+    { names: ['tomp3', 'toaudio'], category: 'sticker', description: 'Convierte video en audio' },
+
+    // ─── SEARCH ───
+    { names: ['yts', 'ytsearch'], category: 'search', description: 'Busca en YouTube' },
+    { names: ['wiki', 'wikipedia'], category: 'search', description: 'Busca en Wikipedia' },
+
+    // ─── TOOLS ───
+    { names: ['traducir', 'translate'], category: 'tools', description: 'Traduce a español' },
+    { names: ['tts'], category: 'tools', description: 'Texto a voz (es)' },
+    { names: ['acortar', 'short'], category: 'tools', description: 'Acorta una URL' },
+    { names: ['ssweb', 'ss'], category: 'tools', description: 'Captura de un sitio web' },
+    { names: ['clima', 'weather'], category: 'tools', description: 'Clima de una ciudad' },
+    { names: ['check', 'onwa', 'existe'], category: 'tools', description: 'Verifica si un número está en WhatsApp' },
+    { names: ['bio', 'ver-bio', 'estadocontacto'], category: 'tools', description: 'Lee la biografía de un usuario' },
+    { names: ['fotoperfil', 'fp', 'pp'], category: 'tools', description: 'Envía la foto de perfil HD' },
+    { names: ['business', 'bizinfo'], category: 'tools', description: 'Info de cuenta business' },
+
+    // ─── DOWNLOAD ───
+    { names: ['play', 'ytmp3', 'musica', 'mp3'], category: 'download', description: 'Descarga audio de YouTube' },
+    { names: ['ytmp4', 'video', 'play2', 'ytvideo', 'mp4'], category: 'download', description: 'Descarga video de YouTube' },
+    { names: ['tiktok', 'tt'], category: 'download', description: 'Descarga video de TikTok' },
+
+    // ─── RPG ───
+    { names: ['reg', 'verificar', 'registrar'], category: 'rpg', description: 'Regístrate (.reg nombre|edad)' },
+    { names: ['unreg'], category: 'rpg', description: 'Cancela tu registro' },
+    { names: ['perfil', 'profile'], category: 'rpg', description: 'Tu perfil RPG' },
+    { names: ['bal', 'balance', 'diamond'], category: 'rpg', description: 'Tu balance' },
+    { names: ['claim', 'daily'], category: 'rpg', description: 'Reclama recompensa diaria' },
+    { names: ['work', 'trabajar', 'w'], category: 'rpg', description: 'Trabaja por dinero' },
+    { names: ['mine', 'minar'], category: 'rpg', description: 'Mina por diamantes' },
+    { names: ['top', 'lb', 'leaderboard'], category: 'rpg', description: 'Ranking de usuarios' },
+    { names: ['rob', 'robar'], category: 'rpg', description: 'Roba dinero a otro usuario' },
+
+    // ─── GAME ───
+    { names: ['ppt', 'suit'], category: 'game', description: 'Piedra, papel, tijera' },
+    { names: ['slot', 'apuesta'], category: 'game', description: 'Tragamonedas (.slot <apuesta>)' },
+    { names: ['reto'], category: 'game', description: 'Un reto al azar' },
+    { names: ['verdad'], category: 'game', description: 'Una pregunta de "verdad"' },
+
+    // ─── FUN ───
+    { names: ['dado'], category: 'fun', description: 'Lanza un dado virtual' },
+    { names: ['gay'], category: 'fun', description: '% gay' },
+    { names: ['toxic'], category: 'fun', description: '% tóxico' },
+    { names: ['fake'], category: 'fun', description: '% fake' },
+    { names: ['racista'], category: 'fun', description: '% racista' },
+    { names: ['love'], category: 'fun', description: 'Calculadora de amor' },
+    { names: ['pareja', 'formarpareja'], category: 'fun', description: 'Empareja al azar' },
+    { names: ['piropo'], category: 'fun', description: 'Un piropo aleatorio' },
+
+    // ─── MISC ───
+    { names: ['afk'], category: 'misc', description: 'Te marca como AFK' },
+    { names: ['report', 'reportar'], category: 'misc', description: 'Reporta un bug al owner' },
+    { names: ['idioma', 'language'], category: 'misc', description: 'Cambia el idioma (es/en)' },
+];
+
+// ─── Map: alias.toLowerCase() → nombre canónico (names[0]) ─────────────
+const ALIAS_MAP = (() => {
+    const map = new Map();
+    for (const entry of COMMAND_META) {
+        const canonical = entry.names[0];
+        for (const n of entry.names) map.set(String(n).toLowerCase(), canonical);
+    }
+    return map;
+})();
+
+// ─── Tabla de toggles per-chat (18 cases colapsados en uno) ────────────
+// Solo cambia el flag de DB y el label del mensaje.
+const CHAT_TOGGLES = {
+    antilink:      { key: 'antilink',           label: 'Antilink' },
+    antilinkyt:    { key: 'AntiYoutube',        label: 'Anti YouTube' },
+    antilinkig:    { key: 'AntInstagram',       label: 'Anti Instagram' },
+    antilinkfb:    { key: 'AntiFacebook',       label: 'Anti Facebook' },
+    antilinktt:    { key: 'AntiTiktok',         label: 'Anti TikTok' },
+    antilinktw:    { key: 'AntiTwitter',        label: 'Anti Twitter/X' },
+    antilinktg:    { key: 'AntiTelegram',       label: 'Anti Telegram' },
+    antitoxic:     { key: 'antitoxic',          label: 'Antitoxic' },
+    antifake:      { key: 'antifake',           label: 'Antifake' },
+    antispam:      { key: 'antispam',           label: 'Antispam' },
+    welcome:       { key: 'welcome',            label: 'Bienvenida' },
+    modeadmin:     { key: 'modeadmin',          label: 'Modo solo-admins' },
+    autosticker:   { key: 'autosticker',        label: 'Autosticker' },
+    bye:           { key: 'bye',                label: 'Mensaje de despedida' },
+    detect:        { key: 'detect',             label: 'Avisos promote/demote' },
+    antidelete:    { key: 'antidelete',         label: 'Anti-delete' },
+    editlog:       { key: 'editlog',            label: 'Edit-log' },
+    notifychanges: { key: 'notifyGroupChanges', label: 'Notificación de cambios' },
+};
+
+// ─── Tabla de comandos % (gay/toxic/fake/racista) ──────────────────────
+const PERCENT_CMDS = {
+    gay:     { label: 'gay 🌈',     emoji: '🌈' },
+    toxic:   { label: 'tóxico ☠️',  emoji: '☠️' },
+    fake:    { label: 'fake 🎭',    emoji: '🎭' },
+    racista: { label: 'racista 🙄', emoji: '🙄' },
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// EXECUTE — despachador principal con switch/case/break
 // ═══════════════════════════════════════════════════════════════════════
 
-export const ping = command({
-    name: 'ping', aliases: ['test'], category: 'info',
-    description: 'Mide la latencia del bot',
-}, async (conn, m) => {
-    const t0 = Date.now();
-    await m.reply('🏓 Pong!');
-    return m.reply(`🌸 Latencia: *${Date.now() - t0} ms*`);
-});
+export async function execute(conn, m, rawCommand, args, text) {
+    if (!rawCommand) return;
+    const cmd = ALIAS_MAP.get(String(rawCommand).toLowerCase());
+    if (!cmd) return; // comando desconocido — silencio
 
-export const menu = command({
-    name: 'menu', aliases: ['help', 'menu1'], category: 'info',
-    description: 'Lista de comandos',
-}, async (conn, m) => {
-    const p = m.prefix || (Array.isArray(global.prefix) ? global.prefix[0] : '.');
-    const ownerName = global.owner?.[0]?.[1] || 'kim';
-    const totalUsers = Object.keys(db.data.users).length;
-    const totalChats = Object.keys(db.data.chats).length;
-    const up = runtime(process.uptime());
-    const mem = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+    try {
+        switch (cmd) {
 
-    const header = `*🌸 ${global.botname || 'KimdanBot-MD'} 🌸*
+            // ═════════════════ INFO ═════════════════
+
+            case 'ping': {
+                const t0 = Date.now();
+                await m.reply('🏓 Pong!');
+                await m.reply(`🌸 Latencia: *${Date.now() - t0} ms*`);
+                break;
+            }
+
+            case 'menu': {
+                const p = m.prefix || (Array.isArray(global.prefix) ? global.prefix[0] : '.');
+                const ownerName = global.owner?.[0]?.[1] || 'kim';
+                const totalUsers = Object.keys(db.data.users).length;
+                const totalChats = Object.keys(db.data.chats).length;
+                const up = runtime(process.uptime());
+                const mem = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
+                const header = `*🌸 ${global.botname || 'KimdanBot-MD'} 🌸*
 *˚₊·˚₊· ͟͟͞͞➻❥ v${global.vs || '3.0.0'}*
 
 *🍒 INFO BOT*
@@ -90,1500 +313,376 @@ export const menu = command({
 *┊* Comandos: ${commandCount()} (${aliasCount()} con aliases)
 *┊* Creador: ${ownerName}
 `;
-
-    const list = buildMenu(p);
-    const text = header + '\n' + list + `\n\n*╰ ${global.botname || 'KimdanBot-MD'} ╯*`;
-
-    try {
-        await conn.sendMessage(m.chat, {
-            image: { url: global.imagen1 || 'https://telegra.ph/file/6ef00a79a7c90c05e7043.jpg' },
-            caption: text,
-        }, { quoted: m });
-    } catch {
-        await m.reply(text);
-    }
-});
-
-export const info = command({
-    name: 'info', aliases: ['infobot', 'infokim'], category: 'info',
-    description: 'Información del bot',
-}, async (conn, m) => {
-    const up = process.uptime();
-    const mem = process.memoryUsage();
-    const mb = (n) => (n / 1024 / 1024).toFixed(1);
-    return m.reply(
-        `🍓 *${global.botname || 'KimdanBot-MD'}*\n` +
-        `v${global.vs || '3.0.0'} — by ${global.owner?.[0]?.[1] || 'kim'}\n\n` +
-        `*📊 Estado:*\n` +
-        `• Uptime: ${runtime(up)}\n` +
-        `• RAM: ${mb(mem.rss)} MB · Heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)} MB\n` +
-        `• Plataforma: ${os.platform()} (${os.arch()})\n` +
-        `• Node: ${process.version}\n` +
-        `• Usuarios DB: ${Object.keys(db.data.users).length}`
-    );
-});
-
-export const estado = command({
-    name: 'estado', aliases: ['status', 'heydan'], category: 'info',
-    description: 'Estado del sistema',
-}, async (conn, m) => {
-    const mem = process.memoryUsage();
-    const mb = (n) => (n / 1024 / 1024).toFixed(1);
-    return m.reply(
-        `*✿ Estado del bot ✿*\n\n` +
-        `🌸 Activo: ${runtime(process.uptime())}\n` +
-        `🍓 RAM: ${mb(mem.rss)} MB\n` +
-        `🫐 Heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)} MB\n` +
-        `💐 Sistema: ${os.platform()}-${os.arch()}\n` +
-        `🍒 CPUs: ${os.cpus().length}\n` +
-        `🍇 Carga: ${os.loadavg().map(n => n.toFixed(2)).join(' / ')}`
-    );
-});
-
-export const uptime = command({
-    name: 'runtime', aliases: ['uptime'], category: 'info',
-    description: 'Tiempo activo del bot',
-}, async (conn, m) => m.reply(`🍓 *Uptime:* ${runtime(process.uptime())}`));
-
-export const creador = command({
-    name: 'creador', aliases: ['owner', 'dono'], category: 'info',
-    description: 'Datos del creador',
-}, async (conn, m) => {
-    const ownerName = global.owner?.[0]?.[1] || 'kim';
-    const ownerNum = global.owner?.[0]?.[0];
-    const text = `🍓 *Creador del bot* 🍓\n\n*Nombre:* ${ownerName}\n*Número:* +${ownerNum}\n*GitHub:* ${global.md || ''}`;
-    return conn.sendMessage(m.chat, {
-        contacts: {
-            displayName: ownerName,
-            contacts: [{
-                vcard: `BEGIN:VCARD\nVERSION:3.0\nFN:${ownerName}\nTEL;type=CELL;type=VOICE;waid=${ownerNum}:+${ownerNum}\nEND:VCARD`,
-            }],
-        },
-    }, { quoted: m }).catch(() => m.reply(text));
-});
-
-export const donar = command({
-    name: 'donar', aliases: ['donacion', 'donate'], category: 'info',
-    description: 'Información de donaciones',
-}, async (conn, m) =>
-    m.reply(`🍓 *Donaciones* 🍓\n\nApóyanos para mantener el bot activo:\n\n• PayPal: ...\n• Nequi: ...\n\n¡Mil gracias! 💐`)
-);
-
-export const canales = command({
-    name: 'canales', aliases: ['cuentaskim', 'cuentas'], category: 'info',
-    description: 'Canales oficiales',
-}, async (conn, m) => {
-    const list = (global.ca || []).filter(Boolean).map((u, i) => `*${i + 1}.* ${u}`).join('\n');
-    return m.reply(`🌸 *Canales oficiales* 🌸\n\n${list || 'Sin canales configurados.'}`);
-});
-
-export const grupos = command({
-    name: 'grupos', aliases: ['gruposkim'], category: 'info',
-    description: 'Grupos oficiales',
-}, async (conn, m) => {
-    const list = (global.wa || []).filter(Boolean).slice(0, 5).map((u, i) => `*${i + 1}.* ${u}`).join('\n');
-    return m.reply(`🍓 *Grupos oficiales* 🍓\n\n${list || 'Sin grupos configurados.'}`);
-});
-
-export const colaboradores = command({
-    name: 'colaboradores', category: 'info',
-    description: 'Equipo del bot',
-}, async (conn, m) => {
-    const list = (global.owner || []).filter(o => o[2]).map(o => `❁ ${o[1] || 'sin nombre'} (+${o[0]})`).join('\n');
-    return m.reply(`🍓 *Colaboradores* 🍓\n\n${list || 'Sin colaboradores.'}`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: OWNER
-// ═══════════════════════════════════════════════════════════════════════
-
-export const evalSync = command({
-    name: 'eval', category: 'owner', description: 'Ejecuta JS (eval sync)',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const code = text || args.join(' ');
-    if (!code) return m.reply('Uso: .eval <código>  o `>` <código>');
-    try {
-        const r = eval(code);
-        const out = typeof r === 'string' ? r : util.inspect(r, { depth: 2, colors: false });
-        return m.reply(truncate(out));
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const evalAsync = command({
-    name: 'evala', aliases: ['evalasync'], category: 'owner',
-    description: 'Ejecuta JS (eval async)',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const code = text || args.join(' ');
-    if (!code) return m.reply('Uso: .evala <código>  o `=>` <código>');
-    try {
-        const r = await eval(`(async () => { ${code} })()`);
-        const out = typeof r === 'string' ? r : util.inspect(r, { depth: 2, colors: false });
-        return m.reply(truncate(out));
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const shell = command({
-    name: 'shell', aliases: ['bash', 'cmd'], category: 'owner',
-    description: 'Ejecuta un comando shell',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const cmd = text || args.join(' ');
-    if (!cmd) return m.reply('Uso: .shell <comando>  o `$` <comando>');
-    try {
-        const out = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
-        return m.reply(truncate(out || '(sin salida)'));
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const restart = command({
-    name: 'restart', aliases: ['reiniciar'], category: 'owner',
-    description: 'Reinicia el bot',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    await m.reply('🔄 Reiniciando...').catch(() => {});
-    process.exit(1);
-});
-
-export const togglePublic = command({
-    name: 'public', category: 'owner', description: 'Modo público',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    conn.public = true;
-    return m.reply('✅ Bot ahora en *modo público*.');
-});
-
-export const togglePrivate = command({
-    name: 'private', category: 'owner', description: 'Modo privado (solo owners)',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    conn.public = false;
-    return m.reply('🔒 Bot en *modo privado* (solo owners).');
-});
-
-export const banUser = command({
-    name: 'banuser', aliases: ['baner'], category: 'owner',
-    description: 'Banea a un usuario del bot',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona, cita o pasa el número del usuario.');
-    const u = getUser(t);
-    u.banned = true;
-    db.markDirty();
-    return m.reply(`🔒 @${t.split('@')[0]} baneado del bot.`, null, { mentions: [t] });
-});
-
-export const unbanUser = command({
-    name: 'unbanuser', category: 'owner', description: 'Desbanea usuario',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona, cita o pasa el número.');
-    const u = getUser(t);
-    u.banned = false;
-    db.markDirty();
-    return m.reply(`🔓 @${t.split('@')[0]} desbaneado.`, null, { mentions: [t] });
-});
-
-export const banChat = command({
-    name: 'banchat', category: 'owner', description: 'Banea chat actual',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    if (!m.isGroup) return m.reply('Solo en grupos.');
-    const c = getChat(m.chat);
-    c.isBanned = true;
-    db.markDirty();
-    return m.reply('🔒 Chat baneado.');
-});
-
-export const unbanChat = command({
-    name: 'unbanchat', category: 'owner', description: 'Desbanea chat',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    if (!m.isGroup) return m.reply('Solo en grupos.');
-    const c = getChat(m.chat);
-    c.isBanned = false;
-    db.markDirty();
-    return m.reply('🔓 Chat desbaneado.');
-});
-
-export const setBio = command({
-    name: 'setbio', aliases: ['setstatus', 'setbiobot'], category: 'owner',
-    description: 'Cambia la bio del bot',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    if (!text) return m.reply('Uso: .setbio <nuevo texto>');
-    try {
-        await conn.updateProfileStatus(text);
-        return m.reply('✅ Bio del bot actualizada.');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const setNameBot = command({
-    name: 'setnamebot', aliases: ['setnameb'], category: 'owner',
-    description: 'Cambia el nombre del bot',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    if (!text) return m.reply('Uso: .setnamebot <nuevo nombre>');
-    try {
-        await conn.updateProfileName(text);
-        return m.reply('✅ Nombre del bot actualizado.');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const block = command({
-    name: 'block', category: 'owner', description: 'Bloquea a un usuario',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario a bloquear.');
-    try {
-        await conn.updateBlockStatus(t, 'block');
-        return m.reply(`🔒 Usuario bloqueado.`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const unblock = command({
-    name: 'unblock', category: 'owner', description: 'Desbloquea usuario',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona, cita o pasa el número.');
-    try {
-        await conn.updateBlockStatus(t, 'unblock');
-        return m.reply(`🔓 Usuario desbloqueado.`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: CONFIG (toggles per-chat / settings)
-// ═══════════════════════════════════════════════════════════════════════
-
-const makeToggle = (key, label, desc) => command({
-    name: `anti${key.toLowerCase()}`.replace(/^anti(?:anti)?/, 'anti'),
-    category: 'config', description: desc,
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c[key] = true;
-    else if (arg === 'off') c[key] = false;
-    else c[key] = !c[key];
-    db.markDirty();
-    return m.reply(`${c[key] ? '✅' : '❌'} ${label} *${c[key] ? 'activado' : 'desactivado'}*`);
-});
-
-// Toggles construidos dinámicamente; los exporto con nombres únicos.
-export const toggleAntilink = command({
-    name: 'antilink', category: 'config', description: 'Borra links de grupos WhatsApp',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.antilink = true;
-    else if (arg === 'off') c.antilink = false;
-    else c.antilink = !c.antilink;
-    db.markDirty();
-    return m.reply(`${c.antilink ? '✅' : '❌'} Antilink *${c.antilink ? 'activado' : 'desactivado'}*`);
-});
-
-const simpleToggle = (chatKey, name, aliases, desc) => command({
-    name, aliases, category: 'config', description: desc,
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c[chatKey] = true;
-    else if (arg === 'off') c[chatKey] = false;
-    else c[chatKey] = !c[chatKey];
-    db.markDirty();
-    return m.reply(`${c[chatKey] ? '✅' : '❌'} ${desc.split(' (')[0]} *${c[chatKey] ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleAntiYoutube  = simpleToggle('AntiYoutube',  'antilinkyt', ['antiyt'], 'Borra links de YouTube');
-export const toggleAntiInstagram= simpleToggle('AntInstagram', 'antilinkig', ['antiig'], 'Borra links de Instagram');
-export const toggleAntiFacebook = simpleToggle('AntiFacebook', 'antilinkfb', ['antifb'], 'Borra links de Facebook');
-export const toggleAntiTiktok   = simpleToggle('AntiTiktok',   'antilinktt', ['antitt'], 'Borra links de TikTok');
-export const toggleAntiTwitter  = simpleToggle('AntiTwitter',  'antilinktw', ['antitw'], 'Borra links de Twitter/X');
-export const toggleAntiTelegram = simpleToggle('AntiTelegram', 'antilinktg', ['antitg'], 'Borra links de Telegram');
-export const toggleAntitoxic    = simpleToggle('antitoxic',    'antitoxic',  [],         'Borra palabras tóxicas');
-export const toggleAntifake     = simpleToggle('antifake',     'antifake',   [],         'Expulsa números fake');
-export const toggleAntispam     = simpleToggle('antispam',     'antispam',   [],         'Rate-limit de comandos');
-export const toggleWelcome      = simpleToggle('welcome',      'welcome',    [],         'Mensajes de bienvenida');
-export const toggleModeAdmin    = simpleToggle('modeadmin',    'modeadmin',  [],         'Solo admins usan comandos');
-export const toggleAutosticker  = simpleToggle('autosticker',  'autosticker',['autosic'],'Auto-stickeriza imágenes');
-
-export const toggleAntiprivado = command({
-    name: 'antiprivado', aliases: ['antipv'], category: 'config',
-    description: 'Bloquea el chat privado a no-owners',
-}, async (conn, m, args) => {
-    if (!needOwner(m)) return;
-    const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
-    if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
-    const s = getSettings(botJid);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') s.antiprivado = true;
-    else if (arg === 'off') s.antiprivado = false;
-    else s.antiprivado = !s.antiprivado;
-    db.markDirty();
-    return m.reply(`${s.antiprivado ? '✅' : '❌'} Antiprivado *${s.antiprivado ? 'activado' : 'desactivado'}*`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: GROUP
-// ═══════════════════════════════════════════════════════════════════════
-
-export const kick = command({
-    name: 'kick', aliases: ['echar', 'sacar'], category: 'group',
-    description: 'Expulsa a un usuario',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario.');
-    if (m.groupAdmins?.includes(t)) return m.reply('No puedo expulsar a un admin.');
-    try {
-        await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
-        return m.reply(`👋 @${t.split('@')[0]} expulsado.`, null, { mentions: [t] });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const add = command({
-    name: 'add', aliases: ['agregar', 'invitar'], category: 'group',
-    description: 'Agrega un número al grupo',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const num = (args[0] || '').replace(/[^0-9]/g, '');
-    if (!num) return m.reply('Uso: .add <número con código de país>');
-    const target = num + '@s.whatsapp.net';
-    try {
-        const res = await conn.groupParticipantsUpdate(m.chat, [target], 'add');
-        const status = res?.[0]?.status;
-        if (status === '200') return m.reply(`✅ @${num} agregado.`, null, { mentions: [target] });
-        return m.reply(`❌ No se pudo agregar (código ${status}).`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const promote = command({
-    name: 'promote', aliases: ['daradmin'], category: 'group',
-    description: 'Da admin a un usuario',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario.');
-    try {
-        await conn.groupParticipantsUpdate(m.chat, [t], 'promote');
-        return m.reply(`⭐ @${t.split('@')[0]} ahora es admin.`, null, { mentions: [t] });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const demote = command({
-    name: 'demote', aliases: ['quitaradmin'], category: 'group',
-    description: 'Quita admin a un usuario',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario.');
-    try {
-        await conn.groupParticipantsUpdate(m.chat, [t], 'demote');
-        return m.reply(`🍃 @${t.split('@')[0]} ya no es admin.`, null, { mentions: [t] });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const getLink = command({
-    name: 'link', aliases: ['linkgc', 'linkgroup'], category: 'group',
-    description: 'Link de invitación del grupo',
-}, async (conn, m) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    try {
-        const code = await conn.groupInviteCode(m.chat);
-        return m.reply(`🔗 *Link del grupo:*\nhttps://chat.whatsapp.com/${code}`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const revokeLink = command({
-    name: 'revoke', aliases: ['resetlink', 'anularlink'], category: 'group',
-    description: 'Revoca el link de invitación',
-}, async (conn, m) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    try {
-        await conn.groupRevokeInvite(m.chat);
-        return m.reply('🔄 Link revocado. El anterior ya no funciona.');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const hidetag = command({
-    name: 'hidetag', aliases: ['notificar'], category: 'group',
-    description: 'Menciona a todos sin mostrarlos',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m)) return;
-    if (!m.participants) return m.reply('No pude leer los participantes.');
-    const mentions = m.participants.map(p => p.id);
-    return conn.sendMessage(m.chat, {
-        text: text || `📢 ${global.botname || 'KimdanBot-MD'}`,
-        mentions,
-    });
-});
-
-export const tagall = command({
-    name: 'tagall', aliases: ['invocar', 'todos'], category: 'group',
-    description: 'Etiqueta a todos (lista visible)',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m)) return;
-    if (!m.participants) return m.reply('No pude leer los participantes.');
-    const mentions = m.participants.map(p => p.id);
-    const lines = mentions.map(j => `• @${j.split('@')[0]}`).join('\n');
-    return conn.sendMessage(m.chat, {
-        text: `📢 *${text || 'Convocatoria general'}*\n\n${lines}`,
-        mentions,
-    });
-});
-
-export const deleteMsg = command({
-    name: 'del', aliases: ['delete'], category: 'group',
-    description: 'Elimina el mensaje citado',
-}, async (conn, m) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    if (!m.quoted) return m.reply('Cita el mensaje a eliminar.');
-    try {
-        await conn.sendMessage(m.chat, {
-            delete: {
-                remoteJid: m.chat,
-                fromMe: m.quoted.fromMe,
-                id: m.quoted.id,
-                participant: m.quoted.sender,
-            },
-        });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const admins = command({
-    name: 'admins', aliases: ['administradores'], category: 'group',
-    description: 'Lista de administradores',
-}, async (conn, m) => {
-    if (!needGroup(m)) return;
-    if (!m.groupAdmins?.length) return m.reply('No hay admins detectados.');
-    const list = m.groupAdmins.map(j => `• @${j.split('@')[0]}`).join('\n');
-    return conn.sendMessage(m.chat, {
-        text: `⭐ *Administradores* ⭐\n\n${list}`,
-        mentions: m.groupAdmins,
-    });
-});
-
-export const infoGroup = command({
-    name: 'infogrupo', aliases: ['groupinfo'], category: 'group',
-    description: 'Info del grupo',
-}, async (conn, m) => {
-    if (!needGroup(m)) return;
-    const meta = m.groupMetadata;
-    if (!meta) return m.reply('No pude leer la info del grupo.');
-    const created = meta.creation ? moment(meta.creation * 1000).tz(global.place || 'UTC').format('DD/MM/YYYY HH:mm') : '-';
-    return m.reply(
-        `🌸 *Info del grupo* 🌸\n\n` +
-        `*Nombre:* ${meta.subject}\n*Creado:* ${created}\n` +
-        `*Participantes:* ${meta.participants?.length || 0}\n` +
-        `*Admins:* ${m.groupAdmins?.length || 0}\n` +
-        `*Descripción:*\n${meta.desc?.toString() || '(sin descripción)'}`
-    );
-});
-
-export const setname = command({
-    name: 'setname', aliases: ['setnameg', 'setnombre'], category: 'group',
-    description: 'Cambia el nombre del grupo',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    if (!text) return m.reply('Uso: .setname <nombre>');
-    try { await conn.groupUpdateSubject(m.chat, text); return m.reply('✅ Nombre actualizado.'); }
-    catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const setdesc = command({
-    name: 'setdesc', aliases: ['setdescripcion', 'descripcion'], category: 'group',
-    description: 'Cambia la descripción del grupo',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    if (!text) return m.reply('Uso: .setdesc <descripción>');
-    try { await conn.groupUpdateDescription(m.chat, text); return m.reply('✅ Descripción actualizada.'); }
-    catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const warn = command({
-    name: 'warn', aliases: ['advertencia'], category: 'group',
-    description: 'Advierte a un usuario',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario.');
-    const u = getUser(t);
-    u.warn = (u.warn || 0) + 1;
-    db.markDirty();
-    const max = parseInt(global.maxwarn) || 4;
-    if (u.warn >= max && m.isBotAdmin) {
-        try {
-            await conn.sendMessage(m.chat, {
-                text: `⚠️ @${t.split('@')[0]} alcanzó ${max} advertencias.`,
-                mentions: [t],
-            });
-            await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
-            u.warn = 0;
-        } catch { /* */ }
-        return;
-    }
-    return m.reply(`⚠️ @${t.split('@')[0]} advertido (${u.warn}/${max}).`, null, { mentions: [t] });
-});
-
-export const unwarn = command({
-    name: 'unwarn', aliases: ['quitardvertencia'], category: 'group',
-    description: 'Quita una advertencia',
-}, async (conn, m, args, text) => {
-    if (!needGroupAdmin(m)) return;
-    const t = resolveTarget(m, text);
-    if (!t) return m.reply('Menciona o cita al usuario.');
-    const u = getUser(t);
-    u.warn = Math.max(0, (u.warn || 0) - 1);
-    db.markDirty();
-    return m.reply(`✅ @${t.split('@')[0]} ahora tiene ${u.warn} advertencias.`, null, { mentions: [t] });
-});
-
-export const listwarn = command({
-    name: 'listwarn', category: 'group',
-    description: 'Lista usuarios con advertencias del grupo',
-}, async (conn, m) => {
-    if (!needGroupAdmin(m)) return;
-    const participants = m.participants?.map(p => p.id) || [];
-    const warned = participants
-        .map(j => ({ jid: j, warn: db.data.users[j]?.warn || 0 }))
-        .filter(u => u.warn > 0);
-    if (!warned.length) return m.reply('✨ Nadie tiene advertencias.');
-    const list = warned.map(u => `• @${u.jid.split('@')[0]}: ${u.warn}`).join('\n');
-    return conn.sendMessage(m.chat, {
-        text: `*⚠️ Advertencias*\n\n${list}`,
-        mentions: warned.map(u => u.jid),
-    });
-});
-
-export const grupoOpenClose = command({
-    name: 'grupo', category: 'group',
-    description: 'Abre/cierra el grupo (.grupo abrir|cerrar)',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const arg = (args[0] || '').toLowerCase();
-    if (arg !== 'abrir' && arg !== 'cerrar') {
-        return m.reply('Uso: .grupo abrir  |  .grupo cerrar');
-    }
-    try {
-        await conn.groupSettingUpdate(m.chat, arg === 'abrir' ? 'not_announcement' : 'announcement');
-        // El anuncio "GRUPO ABIERTO/CERRADO" lo envía kim/announcements.js
-        // automáticamente al detectar el cambio (evento groups.update con
-        // announce: true/false). Aquí solo confirmamos con una reacción
-        // para evitar duplicar el mensaje.
-        return m.react?.(arg === 'abrir' ? '🌸' : '🔒');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const toggleBye = command({
-    name: 'bye', aliases: ['despedida'], category: 'config',
-    description: 'Activa/desactiva el mensaje de despedida',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.bye = true;
-    else if (arg === 'off') c.bye = false;
-    else c.bye = !c.bye;
-    db.markDirty();
-    return m.reply(`${c.bye ? '✅' : '❌'} Mensaje de despedida *${c.bye ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleDetect = command({
-    name: 'detect', aliases: ['anunciarAdmins'], category: 'config',
-    description: 'Activa/desactiva avisos de promote/demote',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.detect = true;
-    else if (arg === 'off') c.detect = false;
-    else c.detect = !c.detect;
-    db.markDirty();
-    return m.reply(`${c.detect ? '✅' : '❌'} Avisos promote/demote *${c.detect ? 'activados' : 'desactivados'}*`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: STICKER / MEDIA
-// ═══════════════════════════════════════════════════════════════════════
-
-export const sticker = command({
-    name: 's', aliases: ['sticker'], category: 'sticker',
-    description: 'Convierte imagen/video en sticker',
-}, async (conn, m) => {
-    const target = m.quoted || m;
-    const mime = target.msg?.mimetype || target.mimetype || '';
-    if (!/^(image|video|webp)/.test(mime)) {
-        return m.reply('🎀 Responde a una imagen o video corto con el comando.');
-    }
-    if (mime.startsWith('video') && (target.msg?.seconds || 0) > 10) {
-        return m.reply('⏳ El video debe durar máximo 10 segundos.');
-    }
-    try {
-        const buffer = await target.download();
-        return conn.sendMessage(m.chat, { sticker: buffer }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const attp = command({
-    name: 'attp', category: 'sticker', description: 'Crea un sticker animado con texto',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .attp <texto>');
-    try {
-        const buf = await getBuffer(`https://api.popcat.xyz/attp?text=${encodeURIComponent(text)}`);
-        if (!buf) throw new Error('No se pudo generar.');
-        return conn.sendMessage(m.chat, { sticker: buf }, { quoted: m });
-    } catch (e) { return m.reply('❌ Servicio attp no disponible: ' + (e?.message || e)); }
-});
-
-export const toImg = command({
-    name: 'toimg', aliases: ['toimagen'], category: 'sticker',
-    description: 'Convierte sticker en imagen',
-}, async (conn, m) => {
-    const target = m.quoted || m;
-    const mime = target.msg?.mimetype || '';
-    if (!mime.includes('webp')) return m.reply('Responde a un sticker (webp).');
-    try {
-        const buf = await target.download();
-        return conn.sendMessage(m.chat, { image: buf, caption: '' }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const tomp3 = command({
-    name: 'tomp3', aliases: ['toaudio'], category: 'sticker',
-    description: 'Convierte video en audio',
-}, async (conn, m) => {
-    const target = m.quoted || m;
-    const mime = target.msg?.mimetype || '';
-    if (!/video|audio/.test(mime)) return m.reply('Responde a un video o audio.');
-    try {
-        const buf = await target.download();
-        return conn.sendMessage(m.chat, {
-            audio: buf, mimetype: 'audio/mp4', ptt: false,
-        }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const dado = command({
-    name: 'dado', category: 'fun', description: 'Lanza un dado virtual',
-}, async (conn, m) => {
-    const n = Math.floor(Math.random() * 6) + 1;
-    return m.reply(`🎲 Sacaste un *${n}*`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: SEARCH / TOOLS
-// ═══════════════════════════════════════════════════════════════════════
-
-export const ytSearch = command({
-    name: 'yts', aliases: ['ytsearch'], category: 'search',
-    description: 'Busca en YouTube',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .yts <texto>');
-    let yts;
-    try { ({ default: yts } = await import('yt-search')); }
-    catch { return m.reply('⚠️ Instala yt-search:  npm i yt-search'); }
-    try {
-        const r = await yts(text);
-        const top = (r.videos || []).slice(0, 5);
-        if (!top.length) return m.reply('Sin resultados.');
-        const out = top.map((v, i) =>
-            `*${i + 1}.* ${v.title}\n_${v.author?.name || ''}_ — ${v.timestamp || ''}\n${v.url}`
-        ).join('\n\n');
-        return m.reply(`🍒 *Resultados:*\n\n${out}`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const translate = command({
-    name: 'traducir', aliases: ['translate'], category: 'tools',
-    description: 'Traduce texto (auto → español)',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .traducir <texto>');
-    try {
-        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q=${encodeURIComponent(text)}`;
-        const res = await axios.get(url, { timeout: 15000 });
-        const translated = res.data?.[0]?.map(s => s[0]).join('') || '';
-        return m.reply(`🌐 ${translated || '(sin traducción)'}`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const tts = command({
-    name: 'tts', category: 'tools', description: 'Texto a voz (es)',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .tts <texto>');
-    try {
-        const buf = await getBuffer(
-            `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=es&client=tw-ob`,
-            { headers: { 'User-Agent': 'Mozilla/5.0' } }
-        );
-        if (!buf) throw new Error('No se pudo generar audio.');
-        return conn.sendMessage(m.chat, { audio: buf, mimetype: 'audio/mp4', ptt: true }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const shorten = command({
-    name: 'acortar', aliases: ['short'], category: 'tools',
-    description: 'Acorta una URL',
-}, async (conn, m, args, text) => {
-    if (!text || !isUrl(text)) return m.reply('Uso: .acortar <URL>');
-    try {
-        const res = await axios.get(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(text)}`, { timeout: 10000 });
-        return m.reply(`🔗 ${res.data}`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const ssweb = command({
-    name: 'ssweb', aliases: ['ss'], category: 'tools',
-    description: 'Captura de un sitio web',
-}, async (conn, m, args, text) => {
-    if (!text || !isUrl(text)) return m.reply('Uso: .ssweb <URL>');
-    try {
-        const buf = await getBuffer(`https://api.popcat.xyz/screenshot?url=${encodeURIComponent(text)}`);
-        if (!buf) throw new Error('Servicio no disponible.');
-        return conn.sendMessage(m.chat, { image: buf, caption: text }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const wikiSearch = command({
-    name: 'wiki', aliases: ['wikipedia'], category: 'search',
-    description: 'Busca en Wikipedia',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .wiki <tema>');
-    try {
-        const url = `https://es.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(text)}`;
-        const res = await axios.get(url, { timeout: 15000 });
-        const d = res.data;
-        const reply = `📚 *${d.title}*\n\n${d.extract || '(sin resumen)'}\n\n🔗 ${d.content_urls?.desktop?.page || ''}`;
-        return m.reply(truncate(reply));
-    } catch (e) { return m.reply('❌ No encontrado.'); }
-});
-
-export const clima = command({
-    name: 'clima', aliases: ['weather'], category: 'tools',
-    description: 'Clima de una ciudad',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .clima <ciudad>');
-    try {
-        const url = `https://wttr.in/${encodeURIComponent(text)}?format=j1&lang=es`;
-        const res = await axios.get(url, { timeout: 15000 });
-        const cur = res.data?.current_condition?.[0];
-        if (!cur) throw new Error('Sin datos');
-        return m.reply(
-            `🌤️ *Clima en ${text}*\n\n` +
-            `• Temperatura: ${cur.temp_C}°C (sensación ${cur.FeelsLikeC}°C)\n` +
-            `• Estado: ${cur.lang_es?.[0]?.value || cur.weatherDesc?.[0]?.value || '?'}\n` +
-            `• Humedad: ${cur.humidity}%\n` +
-            `• Viento: ${cur.windspeedKmph} km/h`
-        );
-    } catch (e) { return m.reply('❌ No se pudo obtener el clima.'); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: DOWNLOAD
-// ═══════════════════════════════════════════════════════════════════════
-// Estos comandos dependen de scrapers externos que rompen frecuentemente.
-// Si fallan, devuelven mensaje claro.
-
-export const ytmp3 = command({
-    name: 'play', aliases: ['ytmp3', 'musica', 'mp3'], category: 'download',
-    description: 'Descarga audio de YouTube',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .play <canción o link>');
-    try {
-        let yts; try { ({ default: yts } = await import('yt-search')); } catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
-        const r = await yts(text);
-        const video = r.videos?.[0];
-        if (!video) return m.reply('Sin resultados.');
-        // Intento con API pública (puede fallar/cambiar). Caída suave.
-        try {
-            const apiUrl = `https://api.zahwazein.xyz/downloader/youtubeaudio?url=${encodeURIComponent(video.url)}&apikey=${global.keysxxx}`;
-            const res = await axios.get(apiUrl, { timeout: 30000 });
-            const audioUrl = res.data?.result?.url || res.data?.result?.audio;
-            if (!audioUrl) throw new Error('API sin URL');
-            const buf = await getBuffer(audioUrl);
-            return conn.sendMessage(m.chat, {
-                audio: buf, mimetype: 'audio/mp4',
-                fileName: `${video.title}.mp3`,
-            }, { quoted: m });
-        } catch (err) {
-            return m.reply(`🎵 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ No pude descargar el audio (API caída). Usa el link.`);
-        }
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const ytmp4 = command({
-    name: 'ytmp4', aliases: ['video', 'play2', 'ytvideo', 'mp4'], category: 'download',
-    description: 'Descarga video de YouTube',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .ytmp4 <canción o link>');
-    try {
-        let yts; try { ({ default: yts } = await import('yt-search')); } catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
-        const r = await yts(text);
-        const video = r.videos?.[0];
-        if (!video) return m.reply('Sin resultados.');
-        return m.reply(`🎬 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ La descarga directa requiere scrapers externos. Usa el link.`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const tiktokDl = command({
-    name: 'tiktok', aliases: ['tt'], category: 'download',
-    description: 'Descarga video de TikTok',
-}, async (conn, m, args, text) => {
-    if (!text || !isUrl(text)) return m.reply('Uso: .tiktok <link>');
-    try {
-        const apiUrl = `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(text)}`;
-        const res = await axios.get(apiUrl, { timeout: 20000 });
-        const videoUrl = res.data?.video?.noWatermark || res.data?.video?.watermark;
-        if (!videoUrl) throw new Error('API sin URL');
-        const buf = await getBuffer(videoUrl);
-        return conn.sendMessage(m.chat, {
-            video: buf, mimetype: 'video/mp4',
-            caption: res.data?.title || 'TikTok',
-        }, { quoted: m });
-    } catch (e) { return m.reply('❌ No se pudo descargar (API caída). Intenta con otro link.'); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: RPG
-// ═══════════════════════════════════════════════════════════════════════
-
-export const reg = command({
-    name: 'reg', aliases: ['verificar', 'registrar'], category: 'rpg',
-    description: 'Regístrate (uso: .reg nombre|edad)',
-}, async (conn, m, args, text) => {
-    if (!text || !text.includes('|')) return m.reply('Uso: .reg <nombre>|<edad>\nEjemplo: .reg Ana|22');
-    const [name, ageStr] = text.split('|').map(s => s.trim());
-    const age = parseInt(ageStr);
-    if (!name || isNaN(age)) return m.reply('Formato inválido. Uso: .reg <nombre>|<edad>');
-    if (age < 5 || age > 120) return m.reply('Edad inválida.');
-    const u = getUser(m.sender);
-    u.registered = true;
-    u.name = name;
-    u.age = age;
-    u.regTime = Date.now();
-    db.markDirty();
-    return m.reply(`✅ Registrado/a como *${name}* (${age} años).`);
-});
-
-export const unreg = command({
-    name: 'unreg', category: 'rpg', description: 'Cancela tu registro',
-}, async (conn, m) => {
-    const u = getUser(m.sender);
-    u.registered = false;
-    u.regTime = -1;
-    db.markDirty();
-    return m.reply('🍃 Registro cancelado.');
-});
-
-export const perfil = command({
-    name: 'perfil', aliases: ['profile'], category: 'rpg',
-    description: 'Tu perfil RPG',
-}, async (conn, m) => {
-    const u = getUser(m.sender);
-    return m.reply(
-        `🌸 *Tu perfil* 🌸\n\n` +
-        `• Nombre: ${u.name || '(sin registrar)'}\n` +
-        `• Edad: ${u.age || '?'}\n` +
-        `• Nivel: ${u.level || 0}\n` +
-        `• EXP: ${u.exp || 0}\n` +
-        `• Rol: ${u.role || 'Novato'}\n` +
-        `• 💎 Diamantes: ${u.diamond || 0}\n` +
-        `• 💰 Dinero: ${u.money || 0}`
-    );
-});
-
-export const bal = command({
-    name: 'bal', aliases: ['balance', 'diamond'], category: 'rpg',
-    description: 'Tu balance',
-}, async (conn, m) => {
-    const u = getUser(m.sender);
-    return m.reply(`💰 Dinero: *${u.money || 0}*\n💎 Diamantes: *${u.diamond || 0}*\n⭐ Nivel: *${u.level || 0}*`);
-});
-
-const COOLDOWN = (key, durationMs) => async (conn, m, args, text) => {
-    const u = getUser(m.sender);
-    const last = u[key] || 0;
-    const left = durationMs - (Date.now() - last);
-    if (left > 0) {
-        const min = Math.ceil(left / 60000);
-        return m.reply(`⏱ Espera *${min} min* antes de volver a usar este comando.`);
-    }
-    return null; // ok, continúa
-};
-
-export const claim = command({
-    name: 'claim', aliases: ['daily'], category: 'rpg',
-    description: 'Reclama recompensa diaria',
-}, async (conn, m) => {
-    const cd = await COOLDOWN('lastclaim', 24 * 60 * 60 * 1000)(conn, m);
-    if (cd) return;
-    const u = getUser(m.sender);
-    const reward = Math.floor(Math.random() * 500) + 100;
-    u.money = (u.money || 0) + reward;
-    u.lastclaim = Date.now();
-    db.markDirty();
-    return m.reply(`💰 +${reward} monedas. Vuelve en 24h.`);
-});
-
-export const work = command({
-    name: 'work', aliases: ['trabajar', 'w'], category: 'rpg',
-    description: 'Trabaja por dinero',
-}, async (conn, m) => {
-    const cd = await COOLDOWN('lastwork', 10 * 60 * 1000)(conn, m);
-    if (cd) return;
-    const u = getUser(m.sender);
-    const reward = Math.floor(Math.random() * 100) + 20;
-    u.money = (u.money || 0) + reward;
-    u.exp = (u.exp || 0) + 5;
-    u.lastwork = Date.now();
-    db.markDirty();
-    const jobs = ['programador', 'diseñador', 'taxista', 'cocinero', 'cantante', 'profesor'];
-    const job = jobs[Math.floor(Math.random() * jobs.length)];
-    return m.reply(`💼 Trabajaste como *${job}* y ganaste *${reward}* monedas (+5 exp).`);
-});
-
-export const mine = command({
-    name: 'mine', aliases: ['minar'], category: 'rpg',
-    description: 'Mina por diamantes',
-}, async (conn, m) => {
-    const cd = await COOLDOWN('lastmine', 15 * 60 * 1000)(conn, m);
-    if (cd) return;
-    const u = getUser(m.sender);
-    const diamonds = Math.floor(Math.random() * 5) + 1;
-    u.diamond = (u.diamond || 0) + diamonds;
-    u.exp = (u.exp || 0) + 8;
-    u.lastmine = Date.now();
-    db.markDirty();
-    return m.reply(`⛏ Minaste y encontraste *${diamonds}* diamantes 💎 (+8 exp).`);
-});
-
-export const top = command({
-    name: 'top', aliases: ['lb', 'leaderboard'], category: 'rpg',
-    description: 'Ranking de usuarios',
-}, async (conn, m) => {
-    const all = Object.entries(db.data.users)
-        .map(([jid, u]) => ({ jid, money: u.money || 0, level: u.level || 0, exp: u.exp || 0 }))
-        .sort((a, b) => b.money - a.money)
-        .slice(0, 10);
-    if (!all.length) return m.reply('Sin datos.');
-    const list = all.map((u, i) =>
-        `*${i + 1}.* @${u.jid.split('@')[0]} — ${u.money} 💰 (nivel ${u.level})`
-    ).join('\n');
-    return conn.sendMessage(m.chat, {
-        text: `🏆 *Top 10 por dinero*\n\n${list}`,
-        mentions: all.map(u => u.jid),
-    });
-});
-
-export const rob = command({
-    name: 'rob', aliases: ['robar'], category: 'rpg',
-    description: 'Roba dinero a otro usuario',
-}, async (conn, m, args, text) => {
-    const cd = await COOLDOWN('lastrob', 30 * 60 * 1000)(conn, m);
-    if (cd) return;
-    const t = resolveTarget(m, text);
-    if (!t || t === m.sender) return m.reply('Menciona o cita a la víctima.');
-    const me = getUser(m.sender);
-    const target = getUser(t);
-    if ((target.money || 0) < 100) return m.reply('Esa persona no tiene suficiente dinero.');
-    const success = Math.random() > 0.5;
-    me.lastrob = Date.now();
-    if (success) {
-        const amount = Math.floor((target.money || 0) * (Math.random() * 0.3 + 0.1));
-        target.money -= amount;
-        me.money = (me.money || 0) + amount;
-        db.markDirty();
-        return m.reply(`🦹 Le robaste *${amount}* monedas a @${t.split('@')[0]}.`, null, { mentions: [t] });
-    } else {
-        const fine = Math.floor((me.money || 0) * 0.1);
-        me.money = Math.max(0, (me.money || 0) - fine);
-        db.markDirty();
-        return m.reply(`🚓 Te atraparon y pagaste *${fine}* monedas de multa.`);
-    }
-});
-
-export const slot = command({
-    name: 'slot', aliases: ['apuesta'], category: 'game',
-    description: 'Tragamonedas (.slot <apuesta>)',
-}, async (conn, m, args) => {
-    const bet = parseInt(args[0]);
-    if (!bet || bet < 10) return m.reply('Uso: .slot <apuesta> (mínimo 10)');
-    const u = getUser(m.sender);
-    if ((u.money || 0) < bet) return m.reply('No tienes suficiente dinero.');
-    const emojis = ['🍒', '🍓', '🍇', '🍉', '🍫', '💎'];
-    const r1 = emojis[Math.floor(Math.random() * emojis.length)];
-    const r2 = emojis[Math.floor(Math.random() * emojis.length)];
-    const r3 = emojis[Math.floor(Math.random() * emojis.length)];
-    let multi = 0;
-    if (r1 === r2 && r2 === r3) multi = r1 === '💎' ? 10 : 5;
-    else if (r1 === r2 || r2 === r3 || r1 === r3) multi = 2;
-    const win = bet * multi - (multi === 0 ? bet : 0);
-    u.money = (u.money || 0) + (multi > 0 ? bet * multi : -bet);
-    db.markDirty();
-    const msg = `🎰  ${r1} | ${r2} | ${r3}\n\n` +
-        (multi > 0 ? `🎉 ¡Ganaste *${bet * multi}* monedas!` : `💔 Perdiste *${bet}* monedas.`);
-    return m.reply(msg);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: FUN / GAMES
-// ═══════════════════════════════════════════════════════════════════════
-
-const percentCmd = (name, label, emoji, desc) => command({
-    name, category: 'fun', description: desc,
-}, async (conn, m, args, text) => {
-    const target = m.mentionedJid?.[0]
-        ? `@${m.mentionedJid[0].split('@')[0]}`
-        : (text || m.pushName || 'tú');
-    const pct = Math.floor(Math.random() * 101);
-    return conn.sendMessage(m.chat, {
-        text: `${emoji} ${target} es ${pct}% ${label}`,
-        mentions: m.mentionedJid || [],
-    }, { quoted: m });
-});
-
-export const gay = percentCmd('gay', 'gay 🌈', '🌈', '% gay');
-export const toxic = percentCmd('toxic', 'tóxico ☠️', '☠️', '% tóxico');
-export const fake = percentCmd('fake', 'fake 🎭', '🎭', '% fake');
-export const racista = percentCmd('racista', 'racista 🙄', '🙄', '% racista');
-
-export const love = command({
-    name: 'love', category: 'fun', description: 'Calculadora de amor',
-}, async (conn, m, args) => {
-    if (m.mentionedJid?.length < 2) return m.reply('Menciona a 2 personas. Ej: .love @a @b');
-    const [a, b] = m.mentionedJid;
-    const pct = Math.floor(Math.random() * 101);
-    let bar = '';
-    const blocks = Math.round(pct / 10);
-    for (let i = 0; i < 10; i++) bar += i < blocks ? '💖' : '🤍';
-    return conn.sendMessage(m.chat, {
-        text: `💘 *Compatibilidad amorosa* 💘\n\n@${a.split('@')[0]} ❤️ @${b.split('@')[0]}\n\n${bar}\n*${pct}%*`,
-        mentions: [a, b],
-    }, { quoted: m });
-});
-
-export const pareja = command({
-    name: 'pareja', aliases: ['formarpareja'], category: 'fun',
-    description: 'Te empareja con alguien al azar del grupo',
-}, async (conn, m) => {
-    if (!m.isGroup) return m.reply('Solo en grupos.');
-    const participants = m.participants?.map(p => p.id).filter(id => id !== m.sender) || [];
-    if (!participants.length) return m.reply('No hay candidatos.');
-    const pick = participants[Math.floor(Math.random() * participants.length)];
-    return conn.sendMessage(m.chat, {
-        text: `💘 ${m.pushName || 'Tú'} ♥️ @${pick.split('@')[0]}`,
-        mentions: [pick],
-    }, { quoted: m });
-});
-
-export const ppt = command({
-    name: 'ppt', aliases: ['suit'], category: 'game',
-    description: 'Piedra, papel, tijera',
-}, async (conn, m, args) => {
-    const opciones = ['piedra', 'papel', 'tijera'];
-    const tuyo = (args[0] || '').toLowerCase();
-    if (!opciones.includes(tuyo)) return m.reply('Uso: .ppt piedra | papel | tijera');
-    const bot = opciones[Math.floor(Math.random() * 3)];
-    const emo = { piedra: '🪨', papel: '📄', tijera: '✂️' };
-    let result;
-    if (tuyo === bot) result = '🤝 Empate';
-    else if ((tuyo === 'piedra' && bot === 'tijera') ||
-             (tuyo === 'papel' && bot === 'piedra') ||
-             (tuyo === 'tijera' && bot === 'papel')) result = '🎉 ¡Ganaste!';
-    else result = '💔 Perdiste';
-    return m.reply(`Tú: ${emo[tuyo]} ${tuyo}\nYo: ${emo[bot]} ${bot}\n\n${result}`);
-});
-
-export const piropo = command({
-    name: 'piropo', category: 'fun', description: 'Un piropo aleatorio',
-}, async (conn, m) => {
-    const piropos = [
-        'Si tu fueras Google, yo te buscaría todos los días 🌹',
-        'Si la belleza fuera tiempo, serías la eternidad ✨',
-        'Tu nombre debería estar en mi diario, junto a "todos los días" 📖',
-        'Eres como mi sándwich favorito: imposible no antojarme 🥪',
-        '¿Crees en el amor a primera vista o paso de nuevo? 😏',
-    ];
-    return m.reply(`💐 ${piropos[Math.floor(Math.random() * piropos.length)]}`);
-});
-
-export const reto = command({
-    name: 'reto', category: 'game', description: 'Un reto al azar',
-}, async (conn, m) => {
-    const retos = [
-        'Manda un audio cantando tu canción favorita 🎤',
-        'Cuenta tu peor anécdota en 3 oraciones 😅',
-        'Imita a un animal en mensaje de voz 🐱',
-        'Manda un selfie con cara graciosa 🤪',
-        'Escribe sin usar la letra "e" durante 5 mensajes',
-    ];
-    return m.reply(`🎯 *Reto:* ${retos[Math.floor(Math.random() * retos.length)]}`);
-});
-
-export const verdad = command({
-    name: 'verdad', category: 'game', description: 'Una pregunta de "verdad"',
-}, async (conn, m) => {
-    const verdades = [
-        '¿Cuál es tu mayor miedo?',
-        '¿Has mentido a tu mejor amig@? ¿En qué?',
-        '¿Qué harías si fueras invisible por un día?',
-        '¿Cuál fue tu vergüenza más grande?',
-        '¿Quién te gusta en este grupo?',
-    ];
-    return m.reply(`💎 *Verdad:* ${verdades[Math.floor(Math.random() * verdades.length)]}`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: MISC
-// ═══════════════════════════════════════════════════════════════════════
-
-export const afk = command({
-    name: 'afk', category: 'misc',
-    description: 'Te marca como AFK (.afk razón)',
-}, async (conn, m, args, text) => {
-    const u = getUser(m.sender);
-    u.afkTime = Date.now();
-    u.afkReason = text || 'sin razón';
-    db.markDirty();
-    return m.reply(`💤 *Modo AFK activado*\n*Razón:* ${u.afkReason}`);
-});
-
-export const report = command({
-    name: 'report', aliases: ['reportar'], category: 'misc',
-    description: 'Reporta un bug al owner',
-}, async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .report <descripción del problema>');
-    const ownerJid = global.owner?.[0]?.[0] + '@s.whatsapp.net';
-    try {
-        await conn.sendMessage(ownerJid, {
-            text: `🐞 *Reporte de bug*\n\n*De:* @${m.sender.split('@')[0]}\n*Chat:* ${m.isGroup ? m.groupName : 'privado'}\n*Mensaje:*\n${text}`,
-            mentions: [m.sender],
-        });
-        return m.reply('✅ Reporte enviado al equipo. ¡Gracias!');
-    } catch (e) { return m.reply('❌ No se pudo enviar el reporte.'); }
-});
-
-export const idioma = command({
-    name: 'idioma', aliases: ['language'], category: 'misc',
-    description: 'Cambia el idioma (es/en)',
-}, async (conn, m, args) => {
-    const lang = (args[0] || '').toLowerCase();
-    if (lang !== 'es' && lang !== 'en') return m.reply('Uso: .idioma es | en');
-    const u = getUser(m.sender);
-    u.Language = lang;
-    db.markDirty();
-    return m.reply(`✅ Idioma: ${lang === 'es' ? 'español 🇪🇸' : 'english 🇬🇧'}`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: TOOLS — utilidades que usan la API de Baileys
-// ═══════════════════════════════════════════════════════════════════════
-
-export const checkWA = command({
-    name: 'check', aliases: ['onwa', 'existe'], category: 'tools',
-    description: 'Verifica si un número está en WhatsApp',
-}, async (conn, m, args, text) => {
-    const num = String(text || '').replace(/[^0-9]/g, '');
-    if (!num || num.length < 8) return m.reply('Uso: .check <número>');
-    try {
-        const jid = num + '@s.whatsapp.net';
-        const [result] = await conn.onWhatsApp(jid);
-        if (result?.exists) {
-            return m.reply(`✅ *+${num}* está en WhatsApp.\n*JID:* ${result.jid}`);
-        }
-        return m.reply(`❌ *+${num}* no está en WhatsApp.`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const verBio = command({
-    name: 'bio', aliases: ['ver-bio', 'estadocontacto'], category: 'tools',
-    description: 'Lee la biografía de un usuario',
-}, async (conn, m, args, text) => {
-    const t = m.mentionedJid?.[0] || m.quoted?.sender
-        || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
-    try {
-        const status = await conn.fetchStatus(t);
-        const bioText = Array.isArray(status) ? status[0]?.status : (status?.status?.toString?.() || JSON.stringify(status));
-        const setAt = Array.isArray(status) ? status[0]?.setAt : status?.setAt;
-        return m.reply(
-            `🍓 *Biografía de @${t.split('@')[0]}*\n\n` +
-            `${bioText || '(vacía)'}\n\n` +
-            (setAt ? `*Establecida:* ${new Date(setAt).toLocaleString()}` : '')
-        , null, { mentions: [t] });
-    } catch (e) { return m.reply('❌ No se pudo leer la bio: ' + (e?.message || e)); }
-});
-
-export const fotoPerfil = command({
-    name: 'fotoperfil', aliases: ['fp', 'pp'], category: 'tools',
-    description: 'Envía la foto de perfil HD',
-}, async (conn, m, args, text) => {
-    const t = m.mentionedJid?.[0] || m.quoted?.sender
-        || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
-    try {
-        const url = await conn.profilePictureUrl(t, 'image');
-        const buf = await getBuffer(url);
-        return conn.sendMessage(m.chat, {
-            image: buf,
-            caption: `🌸 Foto de perfil de @${t.split('@')[0]}`,
-            mentions: [t],
-        }, { quoted: m });
-    } catch { return m.reply('❌ No tiene foto de perfil o es privada.'); }
-});
-
-export const businessProfile = command({
-    name: 'business', aliases: ['bizinfo'], category: 'tools',
-    description: 'Info de cuenta business',
-}, async (conn, m, args, text) => {
-    const t = m.mentionedJid?.[0] || m.quoted?.sender
-        || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
-    try {
-        const p = await conn.getBusinessProfile(t);
-        if (!p) return m.reply('❌ No es cuenta business.');
-        return m.reply(
-            `🌸 *Perfil business de @${t.split('@')[0]}*\n\n` +
-            `*Categoría:* ${p.category || '-'}\n` +
-            `*Descripción:* ${p.description || '-'}\n` +
-            `*Email:* ${p.email || '-'}\n` +
-            `*Website:* ${p.website?.join(', ') || '-'}\n` +
-            `*Dirección:* ${p.address || '-'}`
-        , null, { mentions: [t] });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: GROUP — cambios de foto del grupo
-// ═══════════════════════════════════════════════════════════════════════
-
-export const setppGrupo = command({
-    name: 'setppgrupo', aliases: ['setppgroup', 'setppg'], category: 'group',
-    description: 'Cambia la foto del grupo (responde a una imagen)',
-}, async (conn, m) => {
-    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-    const target = m.quoted || m;
-    const mime = target.msg?.mimetype || '';
-    if (!mime.startsWith('image/')) return m.reply('Responde a una imagen con el comando.');
-    try {
-        const buf = await target.download();
-        await conn.updateProfilePicture(m.chat, buf);
-        // Invalida el cache de foto en announcements.js
-        try {
-            const { invalidateGroupPic } = await import('./announcements.js');
-            invalidateGroupPic(m.chat);
-        } catch { /* */ }
-        return m.reply('✅ Foto del grupo actualizada.');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const setppBot = command({
-    name: 'setppbot', category: 'owner',
-    description: 'Cambia la foto del bot (responde a una imagen)',
-}, async (conn, m) => {
-    if (!needOwner(m)) return;
-    const target = m.quoted || m;
-    const mime = target.msg?.mimetype || '';
-    if (!mime.startsWith('image/')) return m.reply('Responde a una imagen con el comando.');
-    try {
-        const buf = await target.download();
-        const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
-        await conn.updateProfilePicture(botJid, buf);
-        return m.reply('✅ Foto del bot actualizada.');
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: GROUP — encuestas (polls)
-// ═══════════════════════════════════════════════════════════════════════
-
-export const encuesta = command({
-    name: 'encuesta', aliases: ['poll'], category: 'group',
-    description: 'Crea encuesta (.encuesta pregunta | op1 | op2 | ...)',
-}, async (conn, m, args, text) => {
-    if (!text || !text.includes('|')) {
-        return m.reply('Uso: .encuesta <pregunta> | <opción 1> | <opción 2> | ...');
-    }
-    const parts = text.split('|').map(s => s.trim()).filter(Boolean);
-    if (parts.length < 3) return m.reply('Necesitas al menos 1 pregunta y 2 opciones.');
-    const [pregunta, ...opciones] = parts;
-    if (opciones.length > 12) return m.reply('Máximo 12 opciones.');
-    try {
-        await conn.sendMessage(m.chat, {
-            poll: {
-                name: pregunta,
-                values: opciones,
-                selectableCount: 1,
-            },
-        }, { quoted: m });
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-export const crearGrupo = command({
-    name: 'creargrupo', aliases: ['groupcreate'], category: 'owner',
-    description: 'Crea un grupo nuevo (.creargrupo <nombre>)',
-}, async (conn, m, args, text) => {
-    if (!needOwner(m)) return;
-    if (!text) return m.reply('Uso: .creargrupo <nombre del grupo>');
-    try {
-        // Crea el grupo con el bot y el owner como miembros
-        const ownerJid = global.owner?.[0]?.[0] + '@s.whatsapp.net';
-        const result = await conn.groupCreate(text, [ownerJid]);
-        return m.reply(`✅ Grupo creado.\n*ID:* ${result.gid || result.id}`);
-    } catch (e) { return m.reply('❌ ' + (e?.message || e)); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: CONFIG — toggles nuevos (anti-llamada, anti-delete, edit-log)
-// ═══════════════════════════════════════════════════════════════════════
-
-export const toggleAntiLlamada = command({
-    name: 'antillamada', aliases: ['anticall'], category: 'config',
-    description: 'Rechaza llamadas automáticas (global del bot)',
-}, async (conn, m, args) => {
-    if (!needOwner(m)) return;
-    const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
-    if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
-    const s = getSettings(botJid);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') s.antillamada = true;
-    else if (arg === 'off') s.antillamada = false;
-    else s.antillamada = !s.antillamada;
-    db.markDirty();
-    return m.reply(`${s.antillamada ? '✅' : '❌'} Anti-llamada *${s.antillamada ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleBloquearLlamada = command({
-    name: 'bloquearllamada', aliases: ['blockcall'], category: 'config',
-    description: 'Además de rechazar, bloquea al que llama',
-}, async (conn, m, args) => {
-    if (!needOwner(m)) return;
-    const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
-    if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
-    const s = getSettings(botJid);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') s.bloquearLlamada = true;
-    else if (arg === 'off') s.bloquearLlamada = false;
-    else s.bloquearLlamada = !s.bloquearLlamada;
-    db.markDirty();
-    return m.reply(`${s.bloquearLlamada ? '✅' : '❌'} Bloquear-al-llamar *${s.bloquearLlamada ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleAntidelete = command({
-    name: 'antidelete', aliases: ['antideleted'], category: 'config',
-    description: 'Recupera mensajes borrados del grupo',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.antidelete = true;
-    else if (arg === 'off') c.antidelete = false;
-    else c.antidelete = !c.antidelete;
-    db.markDirty();
-    return m.reply(`${c.antidelete ? '✅' : '❌'} Anti-delete *${c.antidelete ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleEditlog = command({
-    name: 'editlog', aliases: ['antieedit'], category: 'config',
-    description: 'Log de mensajes editados',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.editlog = true;
-    else if (arg === 'off') c.editlog = false;
-    else c.editlog = !c.editlog;
-    db.markDirty();
-    return m.reply(`${c.editlog ? '✅' : '❌'} Edit-log *${c.editlog ? 'activado' : 'desactivado'}*`);
-});
-
-export const toggleNotifyChanges = command({
-    name: 'notifychanges', aliases: ['avisocambios'], category: 'config',
-    description: 'Avisa cuando cambian nombre/desc/foto del grupo',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-    const arg = (args[0] || '').toLowerCase();
-    if (arg === 'on') c.notifyGroupChanges = true;
-    else if (arg === 'off') c.notifyGroupChanges = false;
-    else c.notifyGroupChanges = !c.notifyGroupChanges;
-    db.markDirty();
-    return m.reply(`${c.notifyGroupChanges ? '✅' : '❌'} Notificación de cambios *${c.notifyGroupChanges ? 'activada' : 'desactivada'}*`);
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// CATEGORÍA: CONFIG — comando .anuncios con todos los toggles
-// ═══════════════════════════════════════════════════════════════════════
-//
-// Un solo comando para controlar TODOS los anuncios automáticos del bot.
-// Jerarquía: master → categoría → individual.
-//
-//   .anuncios                          → muestra el estado actual
-//   .anuncios <opción> <on|off>        → activa/desactiva
-//   .anuncios <opción>                 → toggle
-//
-// Opciones disponibles:
-//   MASTER:     todo, todos
-//   CATEGORÍA:  miembros, grupo
-//   INDIVIDUAL: bienvenida, despedida, admins,
-//               nombre, descripcion, foto, abrircerrar, restriccion
-
-export const anuncios = command({
-    name: 'anuncios', aliases: ['announces', 'avisos'], category: 'config',
-    description: 'Activa/desactiva anuncios automáticos (escribe .anuncios para ver opciones)',
-}, async (conn, m, args) => {
-    if (!needGroupAdmin(m)) return;
-    const c = getChat(m.chat);
-
-    // Mapa: alias del usuario → { key en DB, label legible }
-    const FLAGS = {
-        // ─── MASTER (apaga todos los anuncios del grupo) ───
-        todo:        { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
-        todos:       { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
-        master:      { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
-        all:         { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
-
-        // ─── CATEGORÍAS ───
-        miembros:    { key: 'notifyMembers', label: 'Anuncios de miembros', tier: 'category' },
-        members:     { key: 'notifyMembers', label: 'Anuncios de miembros', tier: 'category' },
-        grupo:       { key: 'notifyGroupChanges', label: 'Cambios del grupo', tier: 'category' },
-        cambios:     { key: 'notifyGroupChanges', label: 'Cambios del grupo', tier: 'category' },
-
-        // ─── INDIVIDUALES (miembros) ───
-        bienvenida:  { key: 'welcome', label: 'Bienvenida', tier: 'individual' },
-        welcome:     { key: 'welcome', label: 'Bienvenida', tier: 'individual' },
-        despedida:   { key: 'bye', label: 'Despedida', tier: 'individual' },
-        bye:         { key: 'bye', label: 'Despedida', tier: 'individual' },
-        admins:      { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
-        admin:       { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
-        detect:      { key: 'detect', label: 'Promote/demote admins', tier: 'individual' },
-
-        // ─── INDIVIDUALES (cambios del grupo) ───
-        nombre:      { key: 'notifySubject', label: 'Cambio de nombre', tier: 'individual' },
-        subject:     { key: 'notifySubject', label: 'Cambio de nombre', tier: 'individual' },
-        descripcion: { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
-        desc:        { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
-        descripción: { key: 'notifyDesc', label: 'Cambio de descripción', tier: 'individual' },
-        foto:        { key: 'notifyIcon', label: 'Cambio de foto', tier: 'individual' },
-        icon:        { key: 'notifyIcon', label: 'Cambio de foto', tier: 'individual' },
-        abrircerrar: { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
-        announce:    { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
-        cerrar:      { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
-        abrir:       { key: 'notifyAnnounce', label: 'Abrir/cerrar grupo', tier: 'individual' },
-        restriccion: { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
-        restricción: { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
-        restrict:    { key: 'notifyRestrict', label: 'Restricción de info', tier: 'individual' },
-    };
-
-    // Sin args (o "estado"/"status") → muestra el estado actual
-    const sub = (args[0] || '').toLowerCase();
-    if (!sub || sub === 'estado' || sub === 'status' || sub === 'ver' || sub === 'list') {
-        const yn = (key) => c[key] !== false ? '✅' : '❌';
-        return m.reply(
+                const list = buildMenu(p);
+                const fullText = header + '\n' + list + `\n\n*╰ ${global.botname || 'KimdanBot-MD'} ╯*`;
+                try {
+                    await conn.sendMessage(m.chat, {
+                        image: { url: global.imagen1 || 'https://telegra.ph/file/6ef00a79a7c90c05e7043.jpg' },
+                        caption: fullText,
+                    }, { quoted: m });
+                } catch {
+                    await m.reply(fullText);
+                }
+                break;
+            }
+
+            case 'info': {
+                const up = process.uptime();
+                const mem = process.memoryUsage();
+                const mb = (n) => (n / 1024 / 1024).toFixed(1);
+                await m.reply(
+                    `🍓 *${global.botname || 'KimdanBot-MD'}*\n` +
+                    `v${global.vs || '3.0.0'} — by ${global.owner?.[0]?.[1] || 'kim'}\n\n` +
+                    `*📊 Estado:*\n` +
+                    `• Uptime: ${runtime(up)}\n` +
+                    `• RAM: ${mb(mem.rss)} MB · Heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)} MB\n` +
+                    `• Plataforma: ${os.platform()} (${os.arch()})\n` +
+                    `• Node: ${process.version}\n` +
+                    `• Usuarios DB: ${Object.keys(db.data.users).length}`
+                );
+                break;
+            }
+
+            case 'estado': {
+                const mem = process.memoryUsage();
+                const mb = (n) => (n / 1024 / 1024).toFixed(1);
+                await m.reply(
+                    `*✿ Estado del bot ✿*\n\n` +
+                    `🌸 Activo: ${runtime(process.uptime())}\n` +
+                    `🍓 RAM: ${mb(mem.rss)} MB\n` +
+                    `🫐 Heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)} MB\n` +
+                    `💐 Sistema: ${os.platform()}-${os.arch()}\n` +
+                    `🍒 CPUs: ${os.cpus().length}\n` +
+                    `🍇 Carga: ${os.loadavg().map(n => n.toFixed(2)).join(' / ')}`
+                );
+                break;
+            }
+
+            case 'runtime': {
+                await m.reply(`🍓 *Uptime:* ${runtime(process.uptime())}`);
+                break;
+            }
+
+            case 'creador': {
+                const ownerName = global.owner?.[0]?.[1] || 'kim';
+                const ownerNum = global.owner?.[0]?.[0];
+                const txt = `🍓 *Creador del bot* 🍓\n\n*Nombre:* ${ownerName}\n*Número:* +${ownerNum}\n*GitHub:* ${global.md || ''}`;
+                try {
+                    await conn.sendMessage(m.chat, {
+                        contacts: {
+                            displayName: ownerName,
+                            contacts: [{
+                                vcard: `BEGIN:VCARD\nVERSION:3.0\nFN:${ownerName}\nTEL;type=CELL;type=VOICE;waid=${ownerNum}:+${ownerNum}\nEND:VCARD`,
+                            }],
+                        },
+                    }, { quoted: m });
+                } catch { await m.reply(txt); }
+                break;
+            }
+
+            case 'donar': {
+                await m.reply(`🍓 *Donaciones* 🍓\n\nApóyanos para mantener el bot activo:\n\n• PayPal: ...\n• Nequi: ...\n\n¡Mil gracias! 💐`);
+                break;
+            }
+
+            case 'canales': {
+                const list = (global.ca || []).filter(Boolean).map((u, i) => `*${i + 1}.* ${u}`).join('\n');
+                await m.reply(`🌸 *Canales oficiales* 🌸\n\n${list || 'Sin canales configurados.'}`);
+                break;
+            }
+
+            case 'grupos': {
+                const list = (global.wa || []).filter(Boolean).slice(0, 5).map((u, i) => `*${i + 1}.* ${u}`).join('\n');
+                await m.reply(`🍓 *Grupos oficiales* 🍓\n\n${list || 'Sin grupos configurados.'}`);
+                break;
+            }
+
+            case 'colaboradores': {
+                const list = (global.owner || []).filter(o => o[2]).map(o => `❁ ${o[1] || 'sin nombre'} (+${o[0]})`).join('\n');
+                await m.reply(`🍓 *Colaboradores* 🍓\n\n${list || 'Sin colaboradores.'}`);
+                break;
+            }
+
+            // ═════════════════ OWNER ═════════════════
+
+            case 'eval': {
+                if (!needOwner(m)) return;
+                const code = text || args.join(' ');
+                if (!code) return m.reply('Uso: .eval <código>  o `>` <código>');
+                try {
+                    const r = eval(code);
+                    const out = typeof r === 'string' ? r : util.inspect(r, { depth: 2, colors: false });
+                    await m.reply(truncate(out));
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'evala': {
+                if (!needOwner(m)) return;
+                const code = text || args.join(' ');
+                if (!code) return m.reply('Uso: .evala <código>  o `=>` <código>');
+                try {
+                    const r = await eval(`(async () => { ${code} })()`);
+                    const out = typeof r === 'string' ? r : util.inspect(r, { depth: 2, colors: false });
+                    await m.reply(truncate(out));
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'shell': {
+                if (!needOwner(m)) return;
+                const cmdStr = text || args.join(' ');
+                if (!cmdStr) return m.reply('Uso: .shell <comando>  o `$` <comando>');
+                try {
+                    const out = execSync(cmdStr, { encoding: 'utf-8', timeout: 30000 });
+                    await m.reply(truncate(out || '(sin salida)'));
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'restart': {
+                if (!needOwner(m)) return;
+                await m.reply('🔄 Reiniciando...').catch(() => {});
+                process.exit(1);
+                break;
+            }
+
+            case 'public': {
+                if (!needOwner(m)) return;
+                conn.public = true;
+                await m.reply('✅ Bot ahora en *modo público*.');
+                break;
+            }
+
+            case 'private': {
+                if (!needOwner(m)) return;
+                conn.public = false;
+                await m.reply('🔒 Bot en *modo privado* (solo owners).');
+                break;
+            }
+
+            case 'banuser': {
+                if (!needOwner(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona, cita o pasa el número del usuario.');
+                const u = getUser(t);
+                u.banned = true;
+                db.markDirty();
+                await m.reply(`🔒 @${t.split('@')[0]} baneado del bot.`, null, { mentions: [t] });
+                break;
+            }
+
+            case 'unbanuser': {
+                if (!needOwner(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona, cita o pasa el número.');
+                const u = getUser(t);
+                u.banned = false;
+                db.markDirty();
+                await m.reply(`🔓 @${t.split('@')[0]} desbaneado.`, null, { mentions: [t] });
+                break;
+            }
+
+            case 'banchat': {
+                if (!needOwner(m)) return;
+                if (!m.isGroup) return m.reply('Solo en grupos.');
+                const c = getChat(m.chat);
+                c.isBanned = true;
+                db.markDirty();
+                await m.reply('🔒 Chat baneado.');
+                break;
+            }
+
+            case 'unbanchat': {
+                if (!needOwner(m)) return;
+                if (!m.isGroup) return m.reply('Solo en grupos.');
+                const c = getChat(m.chat);
+                c.isBanned = false;
+                db.markDirty();
+                await m.reply('🔓 Chat desbaneado.');
+                break;
+            }
+
+            case 'setbio': {
+                if (!needOwner(m)) return;
+                if (!text) return m.reply('Uso: .setbio <nuevo texto>');
+                try {
+                    await conn.updateProfileStatus(text);
+                    await m.reply('✅ Bio del bot actualizada.');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'setnamebot': {
+                if (!needOwner(m)) return;
+                if (!text) return m.reply('Uso: .setnamebot <nuevo nombre>');
+                try {
+                    await conn.updateProfileName(text);
+                    await m.reply('✅ Nombre del bot actualizado.');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'block': {
+                if (!needOwner(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario a bloquear.');
+                try {
+                    await conn.updateBlockStatus(t, 'block');
+                    await m.reply(`🔒 Usuario bloqueado.`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'unblock': {
+                if (!needOwner(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona, cita o pasa el número.');
+                try {
+                    await conn.updateBlockStatus(t, 'unblock');
+                    await m.reply(`🔓 Usuario desbloqueado.`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'setppbot': {
+                if (!needOwner(m)) return;
+                const target = m.quoted || m;
+                const mime = target.msg?.mimetype || '';
+                if (!mime.startsWith('image/')) return m.reply('Responde a una imagen con el comando.');
+                try {
+                    const buf = await target.download();
+                    const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
+                    await conn.updateProfilePicture(botJid, buf);
+                    await m.reply('✅ Foto del bot actualizada.');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'creargrupo': {
+                if (!needOwner(m)) return;
+                if (!text) return m.reply('Uso: .creargrupo <nombre del grupo>');
+                try {
+                    const ownerJid = global.owner?.[0]?.[0] + '@s.whatsapp.net';
+                    const result = await conn.groupCreate(text, [ownerJid]);
+                    await m.reply(`✅ Grupo creado.\n*ID:* ${result.gid || result.id}`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            // ═════════════════ CONFIG: per-chat toggles ═════════════════
+            // 18 cases con la misma lógica — solo cambia el flag y el label.
+
+            case 'antilink':
+            case 'antilinkyt':
+            case 'antilinkig':
+            case 'antilinkfb':
+            case 'antilinktt':
+            case 'antilinktw':
+            case 'antilinktg':
+            case 'antitoxic':
+            case 'antifake':
+            case 'antispam':
+            case 'welcome':
+            case 'modeadmin':
+            case 'autosticker':
+            case 'bye':
+            case 'detect':
+            case 'antidelete':
+            case 'editlog':
+            case 'notifychanges': {
+                if (!needGroupAdmin(m)) return;
+                const def = CHAT_TOGGLES[cmd];
+                const c = getChat(m.chat);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') c[def.key] = true;
+                else if (arg === 'off') c[def.key] = false;
+                else c[def.key] = !c[def.key];
+                db.markDirty();
+                await m.reply(`${c[def.key] ? '✅' : '❌'} ${def.label} *${c[def.key] ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            // ═════════════════ CONFIG: settings globales (owner) ═════════════════
+
+            case 'antiprivado': {
+                if (!needOwner(m)) return;
+                const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
+                if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
+                const s = getSettings(botJid);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') s.antiprivado = true;
+                else if (arg === 'off') s.antiprivado = false;
+                else s.antiprivado = !s.antiprivado;
+                db.markDirty();
+                await m.reply(`${s.antiprivado ? '✅' : '❌'} Antiprivado *${s.antiprivado ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'antillamada': {
+                if (!needOwner(m)) return;
+                const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
+                if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
+                const s = getSettings(botJid);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') s.antillamada = true;
+                else if (arg === 'off') s.antillamada = false;
+                else s.antillamada = !s.antillamada;
+                db.markDirty();
+                await m.reply(`${s.antillamada ? '✅' : '❌'} Anti-llamada *${s.antillamada ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'bloquearllamada': {
+                if (!needOwner(m)) return;
+                const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
+                if (!botJid) return m.reply('No se pudo detectar el JID del bot.');
+                const s = getSettings(botJid);
+                const arg = (args[0] || '').toLowerCase();
+                if (arg === 'on') s.bloquearLlamada = true;
+                else if (arg === 'off') s.bloquearLlamada = false;
+                else s.bloquearLlamada = !s.bloquearLlamada;
+                db.markDirty();
+                await m.reply(`${s.bloquearLlamada ? '✅' : '❌'} Bloquear-al-llamar *${s.bloquearLlamada ? 'activado' : 'desactivado'}*`);
+                break;
+            }
+
+            case 'anuncios': {
+                if (!needGroupAdmin(m)) return;
+                const c = getChat(m.chat);
+                const FLAGS = {
+                    todo:        { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+                    todos:       { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+                    master:      { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+                    all:         { key: 'allowAnnouncements', label: 'Todos los anuncios', tier: 'master' },
+                    miembros:    { key: 'notifyMembers',      label: 'Anuncios de miembros', tier: 'category' },
+                    members:     { key: 'notifyMembers',      label: 'Anuncios de miembros', tier: 'category' },
+                    grupo:       { key: 'notifyGroupChanges', label: 'Cambios del grupo',    tier: 'category' },
+                    cambios:     { key: 'notifyGroupChanges', label: 'Cambios del grupo',    tier: 'category' },
+                    bienvenida:  { key: 'welcome',            label: 'Bienvenida',           tier: 'individual' },
+                    welcome:     { key: 'welcome',            label: 'Bienvenida',           tier: 'individual' },
+                    despedida:   { key: 'bye',                label: 'Despedida',            tier: 'individual' },
+                    bye:         { key: 'bye',                label: 'Despedida',            tier: 'individual' },
+                    admins:      { key: 'detect',             label: 'Promote/demote',       tier: 'individual' },
+                    admin:       { key: 'detect',             label: 'Promote/demote',       tier: 'individual' },
+                    detect:      { key: 'detect',             label: 'Promote/demote',       tier: 'individual' },
+                    nombre:      { key: 'notifySubject',      label: 'Cambio de nombre',     tier: 'individual' },
+                    subject:     { key: 'notifySubject',      label: 'Cambio de nombre',     tier: 'individual' },
+                    descripcion: { key: 'notifyDesc',         label: 'Cambio de descripción', tier: 'individual' },
+                    desc:        { key: 'notifyDesc',         label: 'Cambio de descripción', tier: 'individual' },
+                    foto:        { key: 'notifyIcon',         label: 'Cambio de foto',       tier: 'individual' },
+                    icon:        { key: 'notifyIcon',         label: 'Cambio de foto',       tier: 'individual' },
+                    abrircerrar: { key: 'notifyAnnounce',     label: 'Abrir/cerrar grupo',   tier: 'individual' },
+                    announce:    { key: 'notifyAnnounce',     label: 'Abrir/cerrar grupo',   tier: 'individual' },
+                    cerrar:      { key: 'notifyAnnounce',     label: 'Abrir/cerrar grupo',   tier: 'individual' },
+                    abrir:       { key: 'notifyAnnounce',     label: 'Abrir/cerrar grupo',   tier: 'individual' },
+                    restriccion: { key: 'notifyRestrict',     label: 'Restricción de info',  tier: 'individual' },
+                    restrict:    { key: 'notifyRestrict',     label: 'Restricción de info',  tier: 'individual' },
+                };
+                const sub = (args[0] || '').toLowerCase();
+                if (!sub || sub === 'estado' || sub === 'status' || sub === 'ver' || sub === 'list') {
+                    const yn = (key) => c[key] !== false ? '✅' : '❌';
+                    return m.reply(
 `*🌸 Estado de anuncios del grupo 🌸*
 
 *◌ MASTER ◌*
@@ -1622,38 +721,859 @@ export const anuncios = command({
 • \`.anuncios grupo off\` — apaga cambios del grupo
 • \`.anuncios bienvenida off\` — solo apaga la bienvenida
 • \`.anuncios foto on\` — solo prende avisos de foto`
-        );
+                    );
+                }
+                const flag = FLAGS[sub];
+                if (!flag) return m.reply(`❌ Opción no válida: *${sub}*\n\nEscribe *.anuncios* para ver las opciones disponibles.`);
+                const val = (args[1] || '').toLowerCase();
+                let newValue;
+                if (val === 'on' || val === 'activar' || val === '1' || val === 'true' || val === 'si') newValue = true;
+                else if (val === 'off' || val === 'desactivar' || val === '0' || val === 'false' || val === 'no') newValue = false;
+                else newValue = c[flag.key] === false;
+                c[flag.key] = newValue;
+                db.markDirty();
+                let extra = '';
+                if (flag.tier === 'master' && newValue === false) {
+                    extra = '\n\n⚠️ *Ningún anuncio del bot se enviará en este grupo hasta que lo vuelvas a activar.*';
+                } else if (flag.tier === 'category' && newValue === false) {
+                    extra = `\n\n_Todos los anuncios de esta categoría quedan apagados._`;
+                } else if (newValue === false && c.allowAnnouncements === false) {
+                    extra = '\n\n⚠️ Recuerda que el *master* está apagado — ningún anuncio se envía hasta que actives \`.anuncios todo on\`.';
+                }
+                await m.reply(`${newValue ? '✅' : '❌'} *${flag.label}* ${newValue ? 'activado' : 'desactivado'}${extra}`);
+                break;
+            }
+
+            // ═════════════════ GROUP ═════════════════
+
+            case 'kick': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario.');
+                if (m.groupAdmins?.includes(t)) return m.reply('No puedo expulsar a un admin.');
+                try {
+                    await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
+                    await m.reply(`👋 @${t.split('@')[0]} expulsado.`, null, { mentions: [t] });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'add': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const num = (args[0] || '').replace(/[^0-9]/g, '');
+                if (!num) return m.reply('Uso: .add <número con código de país>');
+                const target = num + '@s.whatsapp.net';
+                try {
+                    const res = await conn.groupParticipantsUpdate(m.chat, [target], 'add');
+                    const status = res?.[0]?.status;
+                    if (status === '200') await m.reply(`✅ @${num} agregado.`, null, { mentions: [target] });
+                    else await m.reply(`❌ No se pudo agregar (código ${status}).`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'promote': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario.');
+                try {
+                    await conn.groupParticipantsUpdate(m.chat, [t], 'promote');
+                    await m.reply(`⭐ @${t.split('@')[0]} ahora es admin.`, null, { mentions: [t] });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'demote': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario.');
+                try {
+                    await conn.groupParticipantsUpdate(m.chat, [t], 'demote');
+                    await m.reply(`🍃 @${t.split('@')[0]} ya no es admin.`, null, { mentions: [t] });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'link': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                try {
+                    const code = await conn.groupInviteCode(m.chat);
+                    await m.reply(`🔗 *Link del grupo:*\nhttps://chat.whatsapp.com/${code}`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'revoke': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                try {
+                    await conn.groupRevokeInvite(m.chat);
+                    await m.reply('🔄 Link revocado. El anterior ya no funciona.');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'hidetag': {
+                if (!needGroupAdmin(m)) return;
+                if (!m.participants) return m.reply('No pude leer los participantes.');
+                const mentions = m.participants.map(p => p.id);
+                await conn.sendMessage(m.chat, {
+                    text: text || `📢 ${global.botname || 'KimdanBot-MD'}`,
+                    mentions,
+                });
+                break;
+            }
+
+            case 'tagall': {
+                if (!needGroupAdmin(m)) return;
+                if (!m.participants) return m.reply('No pude leer los participantes.');
+                const mentions = m.participants.map(p => p.id);
+                const lines = mentions.map(j => `• @${j.split('@')[0]}`).join('\n');
+                await conn.sendMessage(m.chat, {
+                    text: `📢 *${text || 'Convocatoria general'}*\n\n${lines}`,
+                    mentions,
+                });
+                break;
+            }
+
+            case 'del': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                if (!m.quoted) return m.reply('Cita el mensaje a eliminar.');
+                try {
+                    await conn.sendMessage(m.chat, {
+                        delete: {
+                            remoteJid: m.chat,
+                            fromMe: m.quoted.fromMe,
+                            id: m.quoted.id,
+                            participant: m.quoted.sender,
+                        },
+                    });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'admins': {
+                if (!needGroup(m)) return;
+                if (!m.groupAdmins?.length) return m.reply('No hay admins detectados.');
+                const list = m.groupAdmins.map(j => `• @${j.split('@')[0]}`).join('\n');
+                await conn.sendMessage(m.chat, {
+                    text: `⭐ *Administradores* ⭐\n\n${list}`,
+                    mentions: m.groupAdmins,
+                });
+                break;
+            }
+
+            case 'infogrupo': {
+                if (!needGroup(m)) return;
+                const meta = m.groupMetadata;
+                if (!meta) return m.reply('No pude leer la info del grupo.');
+                const created = meta.creation ? moment(meta.creation * 1000).tz(global.place || 'UTC').format('DD/MM/YYYY HH:mm') : '-';
+                await m.reply(
+                    `🌸 *Info del grupo* 🌸\n\n` +
+                    `*Nombre:* ${meta.subject}\n*Creado:* ${created}\n` +
+                    `*Participantes:* ${meta.participants?.length || 0}\n` +
+                    `*Admins:* ${m.groupAdmins?.length || 0}\n` +
+                    `*Descripción:*\n${meta.desc?.toString() || '(sin descripción)'}`
+                );
+                break;
+            }
+
+            case 'setname': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                if (!text) return m.reply('Uso: .setname <nombre>');
+                try { await conn.groupUpdateSubject(m.chat, text); await m.reply('✅ Nombre actualizado.'); }
+                catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'setdesc': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                if (!text) return m.reply('Uso: .setdesc <descripción>');
+                try { await conn.groupUpdateDescription(m.chat, text); await m.reply('✅ Descripción actualizada.'); }
+                catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'warn': {
+                if (!needGroupAdmin(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario.');
+                const u = getUser(t);
+                u.warn = (u.warn || 0) + 1;
+                db.markDirty();
+                const max = parseInt(global.maxwarn) || 4;
+                if (u.warn >= max && m.isBotAdmin) {
+                    try {
+                        await conn.sendMessage(m.chat, {
+                            text: `⚠️ @${t.split('@')[0]} alcanzó ${max} advertencias.`,
+                            mentions: [t],
+                        });
+                        await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
+                        u.warn = 0;
+                    } catch { /* */ }
+                    break;
+                }
+                await m.reply(`⚠️ @${t.split('@')[0]} advertido (${u.warn}/${max}).`, null, { mentions: [t] });
+                break;
+            }
+
+            case 'unwarn': {
+                if (!needGroupAdmin(m)) return;
+                const t = resolveTarget(m, text);
+                if (!t) return m.reply('Menciona o cita al usuario.');
+                const u = getUser(t);
+                u.warn = Math.max(0, (u.warn || 0) - 1);
+                db.markDirty();
+                await m.reply(`✅ @${t.split('@')[0]} ahora tiene ${u.warn} advertencias.`, null, { mentions: [t] });
+                break;
+            }
+
+            case 'listwarn': {
+                if (!needGroupAdmin(m)) return;
+                const participants = m.participants?.map(p => p.id) || [];
+                const warned = participants
+                    .map(j => ({ jid: j, warn: db.data.users[j]?.warn || 0 }))
+                    .filter(u => u.warn > 0);
+                if (!warned.length) return m.reply('✨ Nadie tiene advertencias.');
+                const list = warned.map(u => `• @${u.jid.split('@')[0]}: ${u.warn}`).join('\n');
+                await conn.sendMessage(m.chat, {
+                    text: `*⚠️ Advertencias*\n\n${list}`,
+                    mentions: warned.map(u => u.jid),
+                });
+                break;
+            }
+
+            case 'grupo': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const arg = (args[0] || '').toLowerCase();
+                if (arg !== 'abrir' && arg !== 'cerrar') {
+                    return m.reply('Uso: .grupo abrir  |  .grupo cerrar');
+                }
+                try {
+                    await conn.groupSettingUpdate(m.chat, arg === 'abrir' ? 'not_announcement' : 'announcement');
+                    await m.react?.(arg === 'abrir' ? '🌸' : '🔒');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'setppgrupo': {
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+                const target = m.quoted || m;
+                const mime = target.msg?.mimetype || '';
+                if (!mime.startsWith('image/')) return m.reply('Responde a una imagen con el comando.');
+                try {
+                    const buf = await target.download();
+                    await conn.updateProfilePicture(m.chat, buf);
+                    try {
+                        const { invalidateGroupPic } = await import('./announcements.js');
+                        invalidateGroupPic(m.chat);
+                    } catch { /* */ }
+                    await m.reply('✅ Foto del grupo actualizada.');
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'encuesta': {
+                if (!text || !text.includes('|')) {
+                    return m.reply('Uso: .encuesta <pregunta> | <opción 1> | <opción 2> | ...');
+                }
+                const parts = text.split('|').map(s => s.trim()).filter(Boolean);
+                if (parts.length < 3) return m.reply('Necesitas al menos 1 pregunta y 2 opciones.');
+                const [pregunta, ...opciones] = parts;
+                if (opciones.length > 12) return m.reply('Máximo 12 opciones.');
+                try {
+                    await conn.sendMessage(m.chat, {
+                        poll: { name: pregunta, values: opciones, selectableCount: 1 },
+                    }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            // ═════════════════ STICKER / MEDIA ═════════════════
+
+            case 's': {
+                const target = m.quoted || m;
+                const mime = target.msg?.mimetype || target.mimetype || '';
+                if (!/^(image|video|webp)/.test(mime)) {
+                    return m.reply('🎀 Responde a una imagen o video corto con el comando.');
+                }
+                if (mime.startsWith('video') && (target.msg?.seconds || 0) > 10) {
+                    return m.reply('⏳ El video debe durar máximo 10 segundos.');
+                }
+                try {
+                    const buffer = await target.download();
+                    await conn.sendMessage(m.chat, { sticker: buffer }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'attp': {
+                if (!text) return m.reply('Uso: .attp <texto>');
+                try {
+                    const buf = await getBuffer(`https://api.popcat.xyz/attp?text=${encodeURIComponent(text)}`);
+                    if (!buf) throw new Error('No se pudo generar.');
+                    await conn.sendMessage(m.chat, { sticker: buf }, { quoted: m });
+                } catch (e) { await m.reply('❌ Servicio attp no disponible: ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'toimg': {
+                const target = m.quoted || m;
+                const mime = target.msg?.mimetype || '';
+                if (!mime.includes('webp')) return m.reply('Responde a un sticker (webp).');
+                try {
+                    const buf = await target.download();
+                    await conn.sendMessage(m.chat, { image: buf, caption: '' }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'tomp3': {
+                const target = m.quoted || m;
+                const mime = target.msg?.mimetype || '';
+                if (!/video|audio/.test(mime)) return m.reply('Responde a un video o audio.');
+                try {
+                    const buf = await target.download();
+                    await conn.sendMessage(m.chat, {
+                        audio: buf, mimetype: 'audio/mp4', ptt: false,
+                    }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            // ═════════════════ SEARCH ═════════════════
+
+            case 'yts': {
+                if (!text) return m.reply('Uso: .yts <texto>');
+                let yts;
+                try { ({ default: yts } = await import('yt-search')); }
+                catch { return m.reply('⚠️ Instala yt-search:  npm i yt-search'); }
+                try {
+                    const r = await yts(text);
+                    const top = (r.videos || []).slice(0, 5);
+                    if (!top.length) return m.reply('Sin resultados.');
+                    const out = top.map((v, i) =>
+                        `*${i + 1}.* ${v.title}\n_${v.author?.name || ''}_ — ${v.timestamp || ''}\n${v.url}`
+                    ).join('\n\n');
+                    await m.reply(`🍒 *Resultados:*\n\n${out}`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'wiki': {
+                if (!text) return m.reply('Uso: .wiki <tema>');
+                try {
+                    const url = `https://es.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(text)}`;
+                    const res = await axios.get(url, { timeout: 15000 });
+                    const d = res.data;
+                    const reply = `📚 *${d.title}*\n\n${d.extract || '(sin resumen)'}\n\n🔗 ${d.content_urls?.desktop?.page || ''}`;
+                    await m.reply(truncate(reply));
+                } catch (e) { await m.reply('❌ No encontrado.'); }
+                break;
+            }
+
+            // ═════════════════ TOOLS ═════════════════
+
+            case 'traducir': {
+                if (!text) return m.reply('Uso: .traducir <texto>');
+                try {
+                    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=es&dt=t&q=${encodeURIComponent(text)}`;
+                    const res = await axios.get(url, { timeout: 15000 });
+                    const translated = res.data?.[0]?.map(s => s[0]).join('') || '';
+                    await m.reply(`🌐 ${translated || '(sin traducción)'}`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'tts': {
+                if (!text) return m.reply('Uso: .tts <texto>');
+                try {
+                    const buf = await getBuffer(
+                        `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text)}&tl=es&client=tw-ob`,
+                        { headers: { 'User-Agent': 'Mozilla/5.0' } }
+                    );
+                    if (!buf) throw new Error('No se pudo generar audio.');
+                    await conn.sendMessage(m.chat, { audio: buf, mimetype: 'audio/mp4', ptt: true }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'acortar': {
+                if (!text || !isUrl(text)) return m.reply('Uso: .acortar <URL>');
+                try {
+                    const res = await axios.get(`https://tinyurl.com/api-create.php?url=${encodeURIComponent(text)}`, { timeout: 10000 });
+                    await m.reply(`🔗 ${res.data}`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'ssweb': {
+                if (!text || !isUrl(text)) return m.reply('Uso: .ssweb <URL>');
+                try {
+                    const buf = await getBuffer(`https://api.popcat.xyz/screenshot?url=${encodeURIComponent(text)}`);
+                    if (!buf) throw new Error('Servicio no disponible.');
+                    await conn.sendMessage(m.chat, { image: buf, caption: text }, { quoted: m });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'clima': {
+                if (!text) return m.reply('Uso: .clima <ciudad>');
+                try {
+                    const url = `https://wttr.in/${encodeURIComponent(text)}?format=j1&lang=es`;
+                    const res = await axios.get(url, { timeout: 15000 });
+                    const cur = res.data?.current_condition?.[0];
+                    if (!cur) throw new Error('Sin datos');
+                    await m.reply(
+                        `🌤️ *Clima en ${text}*\n\n` +
+                        `• Temperatura: ${cur.temp_C}°C (sensación ${cur.FeelsLikeC}°C)\n` +
+                        `• Estado: ${cur.lang_es?.[0]?.value || cur.weatherDesc?.[0]?.value || '?'}\n` +
+                        `• Humedad: ${cur.humidity}%\n` +
+                        `• Viento: ${cur.windspeedKmph} km/h`
+                    );
+                } catch (e) { await m.reply('❌ No se pudo obtener el clima.'); }
+                break;
+            }
+
+            case 'check': {
+                const num = String(text || '').replace(/[^0-9]/g, '');
+                if (!num || num.length < 8) return m.reply('Uso: .check <número>');
+                try {
+                    const jid = num + '@s.whatsapp.net';
+                    const [result] = await conn.onWhatsApp(jid);
+                    if (result?.exists) await m.reply(`✅ *+${num}* está en WhatsApp.\n*JID:* ${result.jid}`);
+                    else await m.reply(`❌ *+${num}* no está en WhatsApp.`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'bio': {
+                const t = m.mentionedJid?.[0] || m.quoted?.sender
+                    || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
+                try {
+                    const status = await conn.fetchStatus(t);
+                    const bioText = Array.isArray(status) ? status[0]?.status : (status?.status?.toString?.() || JSON.stringify(status));
+                    const setAt = Array.isArray(status) ? status[0]?.setAt : status?.setAt;
+                    await m.reply(
+                        `🍓 *Biografía de @${t.split('@')[0]}*\n\n` +
+                        `${bioText || '(vacía)'}\n\n` +
+                        (setAt ? `*Establecida:* ${new Date(setAt).toLocaleString()}` : '')
+                    , null, { mentions: [t] });
+                } catch (e) { await m.reply('❌ No se pudo leer la bio: ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'fotoperfil': {
+                const t = m.mentionedJid?.[0] || m.quoted?.sender
+                    || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
+                try {
+                    const url = await conn.profilePictureUrl(t, 'image');
+                    const buf = await getBuffer(url);
+                    await conn.sendMessage(m.chat, {
+                        image: buf,
+                        caption: `🌸 Foto de perfil de @${t.split('@')[0]}`,
+                        mentions: [t],
+                    }, { quoted: m });
+                } catch { await m.reply('❌ No tiene foto de perfil o es privada.'); }
+                break;
+            }
+
+            case 'business': {
+                const t = m.mentionedJid?.[0] || m.quoted?.sender
+                    || (text ? text.replace(/[^0-9]/g, '') + '@s.whatsapp.net' : m.sender);
+                try {
+                    const p = await conn.getBusinessProfile(t);
+                    if (!p) return m.reply('❌ No es cuenta business.');
+                    await m.reply(
+                        `🌸 *Perfil business de @${t.split('@')[0]}*\n\n` +
+                        `*Categoría:* ${p.category || '-'}\n` +
+                        `*Descripción:* ${p.description || '-'}\n` +
+                        `*Email:* ${p.email || '-'}\n` +
+                        `*Website:* ${p.website?.join(', ') || '-'}\n` +
+                        `*Dirección:* ${p.address || '-'}`
+                    , null, { mentions: [t] });
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            // ═════════════════ DOWNLOAD ═════════════════
+            // Scrapers externos que pueden caer; degradan a link YouTube.
+
+            case 'play': {
+                if (!text) return m.reply('Uso: .play <canción o link>');
+                try {
+                    let yts;
+                    try { ({ default: yts } = await import('yt-search')); }
+                    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+                    const r = await yts(text);
+                    const video = r.videos?.[0];
+                    if (!video) return m.reply('Sin resultados.');
+                    try {
+                        const apiUrl = `https://api.zahwazein.xyz/downloader/youtubeaudio?url=${encodeURIComponent(video.url)}&apikey=${global.keysxxx}`;
+                        const res = await axios.get(apiUrl, { timeout: 30000 });
+                        const audioUrl = res.data?.result?.url || res.data?.result?.audio;
+                        if (!audioUrl) throw new Error('API sin URL');
+                        const buf = await getBuffer(audioUrl);
+                        await conn.sendMessage(m.chat, {
+                            audio: buf, mimetype: 'audio/mp4',
+                            fileName: `${video.title}.mp3`,
+                        }, { quoted: m });
+                    } catch {
+                        await m.reply(`🎵 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ No pude descargar el audio (API caída). Usa el link.`);
+                    }
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'ytmp4': {
+                if (!text) return m.reply('Uso: .ytmp4 <canción o link>');
+                try {
+                    let yts;
+                    try { ({ default: yts } = await import('yt-search')); }
+                    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+                    const r = await yts(text);
+                    const video = r.videos?.[0];
+                    if (!video) return m.reply('Sin resultados.');
+                    await m.reply(`🎬 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ La descarga directa requiere scrapers externos. Usa el link.`);
+                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                break;
+            }
+
+            case 'tiktok': {
+                if (!text || !isUrl(text)) return m.reply('Uso: .tiktok <link>');
+                try {
+                    const apiUrl = `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(text)}`;
+                    const res = await axios.get(apiUrl, { timeout: 20000 });
+                    const videoUrl = res.data?.video?.noWatermark || res.data?.video?.watermark;
+                    if (!videoUrl) throw new Error('API sin URL');
+                    const buf = await getBuffer(videoUrl);
+                    await conn.sendMessage(m.chat, {
+                        video: buf, mimetype: 'video/mp4',
+                        caption: res.data?.title || 'TikTok',
+                    }, { quoted: m });
+                } catch (e) { await m.reply('❌ No se pudo descargar (API caída). Intenta con otro link.'); }
+                break;
+            }
+
+            // ═════════════════ RPG ═════════════════
+
+            case 'reg': {
+                if (!text || !text.includes('|')) return m.reply('Uso: .reg <nombre>|<edad>\nEjemplo: .reg Ana|22');
+                const [name, ageStr] = text.split('|').map(s => s.trim());
+                const age = parseInt(ageStr);
+                if (!name || isNaN(age)) return m.reply('Formato inválido. Uso: .reg <nombre>|<edad>');
+                if (age < 5 || age > 120) return m.reply('Edad inválida.');
+                const u = getUser(m.sender);
+                u.registered = true;
+                u.name = name;
+                u.age = age;
+                u.regTime = Date.now();
+                db.markDirty();
+                await m.reply(`✅ Registrado/a como *${name}* (${age} años).`);
+                break;
+            }
+
+            case 'unreg': {
+                const u = getUser(m.sender);
+                u.registered = false;
+                u.regTime = -1;
+                db.markDirty();
+                await m.reply('🍃 Registro cancelado.');
+                break;
+            }
+
+            case 'perfil': {
+                const u = getUser(m.sender);
+                await m.reply(
+                    `🌸 *Tu perfil* 🌸\n\n` +
+                    `• Nombre: ${u.name || '(sin registrar)'}\n` +
+                    `• Edad: ${u.age || '?'}\n` +
+                    `• Nivel: ${u.level || 0}\n` +
+                    `• EXP: ${u.exp || 0}\n` +
+                    `• Rol: ${u.role || 'Novato'}\n` +
+                    `• 💎 Diamantes: ${u.diamond || 0}\n` +
+                    `• 💰 Dinero: ${u.money || 0}`
+                );
+                break;
+            }
+
+            case 'bal': {
+                const u = getUser(m.sender);
+                await m.reply(`💰 Dinero: *${u.money || 0}*\n💎 Diamantes: *${u.diamond || 0}*\n⭐ Nivel: *${u.level || 0}*`);
+                break;
+            }
+
+            case 'claim': {
+                if (cooldown(m, 'lastclaim', 24 * 60 * 60 * 1000)) return;
+                const u = getUser(m.sender);
+                const reward = Math.floor(Math.random() * 500) + 100;
+                u.money = (u.money || 0) + reward;
+                u.lastclaim = Date.now();
+                db.markDirty();
+                await m.reply(`💰 +${reward} monedas. Vuelve en 24h.`);
+                break;
+            }
+
+            case 'work': {
+                if (cooldown(m, 'lastwork', 10 * 60 * 1000)) return;
+                const u = getUser(m.sender);
+                const reward = Math.floor(Math.random() * 100) + 20;
+                u.money = (u.money || 0) + reward;
+                u.exp = (u.exp || 0) + 5;
+                u.lastwork = Date.now();
+                db.markDirty();
+                const jobs = ['programador', 'diseñador', 'taxista', 'cocinero', 'cantante', 'profesor'];
+                const job = jobs[Math.floor(Math.random() * jobs.length)];
+                await m.reply(`💼 Trabajaste como *${job}* y ganaste *${reward}* monedas (+5 exp).`);
+                break;
+            }
+
+            case 'mine': {
+                if (cooldown(m, 'lastmine', 15 * 60 * 1000)) return;
+                const u = getUser(m.sender);
+                const diamonds = Math.floor(Math.random() * 5) + 1;
+                u.diamond = (u.diamond || 0) + diamonds;
+                u.exp = (u.exp || 0) + 8;
+                u.lastmine = Date.now();
+                db.markDirty();
+                await m.reply(`⛏ Minaste y encontraste *${diamonds}* diamantes 💎 (+8 exp).`);
+                break;
+            }
+
+            case 'top': {
+                const all = Object.entries(db.data.users)
+                    .map(([jid, u]) => ({ jid, money: u.money || 0, level: u.level || 0 }))
+                    .sort((a, b) => b.money - a.money)
+                    .slice(0, 10);
+                if (!all.length) return m.reply('Sin datos.');
+                const list = all.map((u, i) =>
+                    `*${i + 1}.* @${u.jid.split('@')[0]} — ${u.money} 💰 (nivel ${u.level})`
+                ).join('\n');
+                await conn.sendMessage(m.chat, {
+                    text: `🏆 *Top 10 por dinero*\n\n${list}`,
+                    mentions: all.map(u => u.jid),
+                });
+                break;
+            }
+
+            case 'rob': {
+                if (cooldown(m, 'lastrob', 30 * 60 * 1000)) return;
+                const t = resolveTarget(m, text);
+                if (!t || t === m.sender) return m.reply('Menciona o cita a la víctima.');
+                const me = getUser(m.sender);
+                const tgt = getUser(t);
+                if ((tgt.money || 0) < 100) return m.reply('Esa persona no tiene suficiente dinero.');
+                const success = Math.random() > 0.5;
+                me.lastrob = Date.now();
+                if (success) {
+                    const amount = Math.floor((tgt.money || 0) * (Math.random() * 0.3 + 0.1));
+                    tgt.money -= amount;
+                    me.money = (me.money || 0) + amount;
+                    db.markDirty();
+                    await m.reply(`🦹 Le robaste *${amount}* monedas a @${t.split('@')[0]}.`, null, { mentions: [t] });
+                } else {
+                    const fine = Math.floor((me.money || 0) * 0.1);
+                    me.money = Math.max(0, (me.money || 0) - fine);
+                    db.markDirty();
+                    await m.reply(`🚓 Te atraparon y pagaste *${fine}* monedas de multa.`);
+                }
+                break;
+            }
+
+            // ═════════════════ GAME ═════════════════
+
+            case 'ppt': {
+                const opciones = ['piedra', 'papel', 'tijera'];
+                const tuyo = (args[0] || '').toLowerCase();
+                if (!opciones.includes(tuyo)) return m.reply('Uso: .ppt piedra | papel | tijera');
+                const bot = opciones[Math.floor(Math.random() * 3)];
+                const emo = { piedra: '🪨', papel: '📄', tijera: '✂️' };
+                let result;
+                if (tuyo === bot) result = '🤝 Empate';
+                else if ((tuyo === 'piedra' && bot === 'tijera') ||
+                         (tuyo === 'papel' && bot === 'piedra') ||
+                         (tuyo === 'tijera' && bot === 'papel')) result = '🎉 ¡Ganaste!';
+                else result = '💔 Perdiste';
+                await m.reply(`Tú: ${emo[tuyo]} ${tuyo}\nYo: ${emo[bot]} ${bot}\n\n${result}`);
+                break;
+            }
+
+            case 'slot': {
+                const bet = parseInt(args[0]);
+                if (!bet || bet < 10) return m.reply('Uso: .slot <apuesta> (mínimo 10)');
+                const u = getUser(m.sender);
+                if ((u.money || 0) < bet) return m.reply('No tienes suficiente dinero.');
+                const emojis = ['🍒', '🍓', '🍇', '🍉', '🍫', '💎'];
+                const r1 = emojis[Math.floor(Math.random() * emojis.length)];
+                const r2 = emojis[Math.floor(Math.random() * emojis.length)];
+                const r3 = emojis[Math.floor(Math.random() * emojis.length)];
+                let multi = 0;
+                if (r1 === r2 && r2 === r3) multi = r1 === '💎' ? 10 : 5;
+                else if (r1 === r2 || r2 === r3 || r1 === r3) multi = 2;
+                u.money = (u.money || 0) + (multi > 0 ? bet * multi : -bet);
+                db.markDirty();
+                const msg = `🎰  ${r1} | ${r2} | ${r3}\n\n` +
+                    (multi > 0 ? `🎉 ¡Ganaste *${bet * multi}* monedas!` : `💔 Perdiste *${bet}* monedas.`);
+                await m.reply(msg);
+                break;
+            }
+
+            case 'reto': {
+                const retos = [
+                    'Manda un audio cantando tu canción favorita 🎤',
+                    'Cuenta tu peor anécdota en 3 oraciones 😅',
+                    'Imita a un animal en mensaje de voz 🐱',
+                    'Manda un selfie con cara graciosa 🤪',
+                    'Escribe sin usar la letra "e" durante 5 mensajes',
+                ];
+                await m.reply(`🎯 *Reto:* ${retos[Math.floor(Math.random() * retos.length)]}`);
+                break;
+            }
+
+            case 'verdad': {
+                const verdades = [
+                    '¿Cuál es tu mayor miedo?',
+                    '¿Has mentido a tu mejor amig@? ¿En qué?',
+                    '¿Qué harías si fueras invisible por un día?',
+                    '¿Cuál fue tu vergüenza más grande?',
+                    '¿Quién te gusta en este grupo?',
+                ];
+                await m.reply(`💎 *Verdad:* ${verdades[Math.floor(Math.random() * verdades.length)]}`);
+                break;
+            }
+
+            // ═════════════════ FUN ═════════════════
+
+            case 'dado': {
+                const n = Math.floor(Math.random() * 6) + 1;
+                await m.reply(`🎲 Sacaste un *${n}*`);
+                break;
+            }
+
+            // 4 cases idénticos — solo cambia el label/emoji (PERCENT_CMDS)
+            case 'gay':
+            case 'toxic':
+            case 'fake':
+            case 'racista': {
+                const def = PERCENT_CMDS[cmd];
+                const tgt = m.mentionedJid?.[0]
+                    ? `@${m.mentionedJid[0].split('@')[0]}`
+                    : (text || m.pushName || 'tú');
+                const pct = Math.floor(Math.random() * 101);
+                await conn.sendMessage(m.chat, {
+                    text: `${def.emoji} ${tgt} es ${pct}% ${def.label}`,
+                    mentions: m.mentionedJid || [],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'love': {
+                if ((m.mentionedJid?.length || 0) < 2) return m.reply('Menciona a 2 personas. Ej: .love @a @b');
+                const [a, b] = m.mentionedJid;
+                const pct = Math.floor(Math.random() * 101);
+                let bar = '';
+                const blocks = Math.round(pct / 10);
+                for (let i = 0; i < 10; i++) bar += i < blocks ? '💖' : '🤍';
+                await conn.sendMessage(m.chat, {
+                    text: `💘 *Compatibilidad amorosa* 💘\n\n@${a.split('@')[0]} ❤️ @${b.split('@')[0]}\n\n${bar}\n*${pct}%*`,
+                    mentions: [a, b],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'pareja': {
+                if (!m.isGroup) return m.reply('Solo en grupos.');
+                const participants = m.participants?.map(p => p.id).filter(id => id !== m.sender) || [];
+                if (!participants.length) return m.reply('No hay candidatos.');
+                const pick = participants[Math.floor(Math.random() * participants.length)];
+                await conn.sendMessage(m.chat, {
+                    text: `💘 ${m.pushName || 'Tú'} ♥️ @${pick.split('@')[0]}`,
+                    mentions: [pick],
+                }, { quoted: m });
+                break;
+            }
+
+            case 'piropo': {
+                const piropos = [
+                    'Si tu fueras Google, yo te buscaría todos los días 🌹',
+                    'Si la belleza fuera tiempo, serías la eternidad ✨',
+                    'Tu nombre debería estar en mi diario, junto a "todos los días" 📖',
+                    'Eres como mi sándwich favorito: imposible no antojarme 🥪',
+                    '¿Crees en el amor a primera vista o paso de nuevo? 😏',
+                ];
+                await m.reply(`💐 ${piropos[Math.floor(Math.random() * piropos.length)]}`);
+                break;
+            }
+
+            // ═════════════════ MISC ═════════════════
+
+            case 'afk': {
+                const u = getUser(m.sender);
+                u.afkTime = Date.now();
+                u.afkReason = text || 'sin razón';
+                db.markDirty();
+                await m.reply(`💤 *Modo AFK activado*\n*Razón:* ${u.afkReason}`);
+                break;
+            }
+
+            case 'report': {
+                if (!text) return m.reply('Uso: .report <descripción del problema>');
+                const ownerJid = global.owner?.[0]?.[0] + '@s.whatsapp.net';
+                try {
+                    await conn.sendMessage(ownerJid, {
+                        text: `🐞 *Reporte de bug*\n\n*De:* @${m.sender.split('@')[0]}\n*Chat:* ${m.isGroup ? m.groupName : 'privado'}\n*Mensaje:*\n${text}`,
+                        mentions: [m.sender],
+                    });
+                    await m.reply('✅ Reporte enviado al equipo. ¡Gracias!');
+                } catch (e) { await m.reply('❌ No se pudo enviar el reporte.'); }
+                break;
+            }
+
+            case 'idioma': {
+                const lang = (args[0] || '').toLowerCase();
+                if (lang !== 'es' && lang !== 'en') return m.reply('Uso: .idioma es | en');
+                const u = getUser(m.sender);
+                u.Language = lang;
+                db.markDirty();
+                await m.reply(`✅ Idioma: ${lang === 'es' ? 'español 🇪🇸' : 'english 🇬🇧'}`);
+                break;
+            }
+
+            default: {
+                // Comando en COMMAND_META pero sin case implementado.
+                // No debería pasar nunca; si pasa, lo logueamos.
+                console.warn('[commands] case sin implementar:', cmd);
+                break;
+            }
+
+            // (sin más cases)
+        }
+    } catch (err) {
+        console.error('[commands.execute]', cmd, err?.message || err);
+        try { await m.reply('❌ ' + (err?.message || 'Error desconocido')); } catch { /* */ }
     }
+}
 
-    const flag = FLAGS[sub];
-    if (!flag) {
-        return m.reply(`❌ Opción no válida: *${sub}*\n\nEscribe *.anuncios* para ver las opciones disponibles.`);
-    }
+// ═══════════════════════════════════════════════════════════════════════
+// REGISTRO EN EL REGISTRY
+// ═══════════════════════════════════════════════════════════════════════
+// Para mantener compatibilidad con handler.js sin tocarlo: cada entrada
+// de COMMAND_META se registra en el registry con su metadata + un wrapper
+// que llama execute(). El handler sigue usando this.cmdMap.get(cmd).
 
-    // Determinar el nuevo valor
-    const val = (args[1] || '').toLowerCase();
-    let newValue;
-    if (val === 'on' || val === 'activar' || val === '1' || val === 'true' || val === 'si') {
-        newValue = true;
-    } else if (val === 'off' || val === 'desactivar' || val === '0' || val === 'false' || val === 'no') {
-        newValue = false;
-    } else {
-        // Toggle (invierte el estado actual; tratamos undefined como true)
-        newValue = c[flag.key] === false;
-    }
+for (const meta of COMMAND_META) {
+    const canonical = meta.names[0];
+    const aliases = meta.names.slice(1);
+    command(
+        { name: canonical, aliases, category: meta.category, description: meta.description },
+        (conn, m, args, text) => execute(conn, m, canonical, args, text)
+    );
+}
 
-    c[flag.key] = newValue;
-    db.markDirty();
+// ─── Owner shortcuts ─────────────────────────────────────────────────
+// handler.js importa estos por nombre para los atajos `>`, `=>`, `$`.
+export const evalSync  = (conn, m, args, text) => execute(conn, m, 'eval',  args, text);
+export const evalAsync = (conn, m, args, text) => execute(conn, m, 'evala', args, text);
+export const shell     = (conn, m, args, text) => execute(conn, m, 'shell', args, text);
 
-    // Mensaje según el nivel (avisa si apagar el master desactiva todo)
-    let extra = '';
-    if (flag.tier === 'master' && newValue === false) {
-        extra = '\n\n⚠️ *Ningún anuncio del bot se enviará en este grupo hasta que lo vuelvas a activar.*';
-    } else if (flag.tier === 'category' && newValue === false) {
-        extra = `\n\n_Todos los anuncios de esta categoría quedan apagados._`;
-    } else if (newValue === false && c.allowAnnouncements === false) {
-        extra = '\n\n⚠️ Recuerda que el *master* está apagado — ningún anuncio se envía hasta que actives \`.anuncios todo on\`.';
-    }
-
-    return m.reply(`${newValue ? '✅' : '❌'} *${flag.label}* ${newValue ? 'activado' : 'desactivado'}${extra}`);
-});
+// Exporta COMMAND_META por si algún otro módulo lo quiere usar.
+export { COMMAND_META, ALIAS_MAP };
