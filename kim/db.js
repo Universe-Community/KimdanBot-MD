@@ -4,8 +4,14 @@ import fs from 'fs';
 
 const DEFAULT_USER = () => ({
     exp: 0, level: 0, role: 'Novato', diamond: 10, money: 50,
+    bank: 0, corazones: 0,                 // economía/gacha BL: Lazos (money) + Corazones (premium)
     lastclaim: 0, lastdaily: 0, lastwork: 0, lastmine: 0,
+    lastcrime: 0, lastslut: 0, lastrob: 0, lastroulette: 0, lastcofre: 0,
     registered: false, name: '', age: 0, regTime: -1,
+    // Gacha BL/Yaoi
+    characters: [], favorite: null, lastroll: 0, lastgachaclaim: 0,
+    // Perfil
+    married: null, birthday: null, genre: null, description: '',
     afkTime: -1, afkReason: '',
     warn: 0, banned: false, premium: false,
     Language: 'es', spam: 0, autolevelup: false,
@@ -29,6 +35,8 @@ const DEFAULT_CHAT = () => ({
     AntiYoutube: false, AntInstagram: false, AntiFacebook: false,
     AntiTelegram: false, AntiTiktok: false, AntiTwitter: false,
     autosticker: false, simi: false, viewonce: false,
+    economy: true, gacha: true, nsfw: false, onlyadmin: false,
+    warnlimit: 3,
     sBienvenida: '', sDespedida: '',
 });
 

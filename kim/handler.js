@@ -27,6 +27,9 @@ import { getUser, getChat, getSettings } from './db.js';
 import { runMiddleware } from './middleware.js';
 import './commands.js'; // ← side-effect import: registra TODOS los comandos
 import './commands_extra.js'; // ← comandos migrados desde el bot de referencia
+import './commands_pack2.js'; // ← #tag + economía BL (Lazos)
+import './commands_pack3.js'; // ← gacha BL/Yaoi + interacciones anime SFW (GIFs)
+import './commands_pack4.js'; // ← perfiles, admin, utilidades, descargas, subbots
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 

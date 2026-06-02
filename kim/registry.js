@@ -53,7 +53,7 @@ export function buildCmdMap() {
 const CATEGORY_ORDER = [
     'info', 'owner', 'admin', 'group', 'config',
     'media', 'sticker', 'search', 'download',
-    'rpg', 'game', 'fun', 'tools', 'misc',
+    'rpg', 'gacha', 'game', 'anime', 'fun', 'tools', 'misc',
 ];
 
 // Emojis decorativos por categoría
@@ -68,7 +68,9 @@ const CATEGORY_EMOJI = {
     search:   '🔍',
     download: '📥',
     rpg:      '🎮',
+    gacha:    '🎴',
     game:     '🎲',
+    anime:    '🌸',
     fun:      '🍓',
     tools:    '🛠️',
     misc:     '🍩',
@@ -86,7 +88,9 @@ const CATEGORY_LABEL = {
     search:   'BÚSQUEDAS',
     download: 'DESCARGAS',
     rpg:      'RPG',
+    gacha:    'GACHA BL',
     game:     'JUEGOS',
+    anime:    'ANIME',
     fun:      'DIVERSIÓN',
     tools:    'HERRAMIENTAS',
     misc:     'OTROS',

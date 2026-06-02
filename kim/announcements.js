@@ -144,6 +144,34 @@ async function resolveJidForMention(conn, jid) {
 }
 
 /**
+ * Devuelve el JID EXACTO con el que el grupo reconoce a un participante,
+ * tal como aparece en groupMetadata.participants[].id. Es la clave para que
+ * las menciones se rendericen SIEMPRE como etiqueta: WhatsApp solo activa el
+ * tag cuando el @número del texto coincide con un JID de `mentions` que el
+ * grupo reconozca como miembro. Convertir a PN cuando el grupo es LID-nativo
+ * (o viceversa) producía el bug intermitente de "solo el número".
+ *
+ * Estrategia: buscar al participante por cualquiera de sus formas conocidas
+ * (id/jid/lid/phoneNumber, en PN o LID) y devolver su `.id` canónico. Si no
+ * está en la metadata (p.ej. un 'remove' donde el usuario ya salió), se
+ * devuelve el jid recibido tal cual (el del evento, que es coherente consigo
+ * mismo para texto+mentions).
+ */
+function canonicalGroupJid(jid, meta) {
+    if (!jid) return jid;
+    const parts = meta?.participants;
+    if (!Array.isArray(parts)) return jid;
+    const alt = jid.endsWith('@lid')
+        ? jid.replace('@lid', '@s.whatsapp.net')
+        : (jid.endsWith('@s.whatsapp.net') ? jid.replace('@s.whatsapp.net', '@lid') : null);
+    const forms = new Set([jid, alt].filter(Boolean));
+    const p = parts.find(p =>
+        forms.has(p?.id) || forms.has(p?.jid) || forms.has(p?.lid) || forms.has(p?.phoneNumber)
+    );
+    return p?.id || jid;
+}
+
+/**
  * Obtiene el nombre para mostrar del usuario (notify / pushName / verifiedName).
  * Intenta varias fuentes:
  *   1. groupMetadata.participants — el server suele incluir notify
@@ -321,10 +349,13 @@ async function onParticipantsUpdate(conn, event) {
         const isByAdmin = isByOther && !isByBot;
         const authorClean = author?.split('@')[0];
 
-        // Resuelve LID → PN si es posible (para que las menciones se vean
-        // como @número-real en lugar de @LID-anónimo).
-        const numForMention    = await resolveJidForMention(conn, num);
-        const authorForMention = author ? await resolveJidForMention(conn, author) : null;
+        // Resuelve el JID al formato EXACTO que el grupo reconoce (el `id`
+        // de groupMetadata.participants). Así el @número del texto coincide
+        // siempre con el JID de `mentions` y la etiqueta se renderiza en el
+        // 100% de los casos (PN o LID-nativo). Para 'remove' (el usuario ya
+        // salió) cae al jid del evento, coherente consigo mismo.
+        const numForMention    = canonicalGroupJid(num, meta);
+        const authorForMention = author ? canonicalGroupJid(author, meta) : null;
         const mentions = [numForMention];
         if (isByAdmin && authorForMention) mentions.push(authorForMention);
 
@@ -716,8 +747,7 @@ function onContactsUpdate(conn, updates) {
  * Conecta TODOS los listeners de anuncios a la conexión Baileys.
  * Llamar una sola vez después de tener el socket creado.
  */
-export function attachAnnouncements(conn) {
-    if (!conn?.ev) return;
+export function attachAnnouncements(conn) {    if (!conn?.ev) return;
     if (conn.__announcementsAttached) return;
     conn.__announcementsAttached = true;
 
@@ -764,4 +794,9 @@ export function attachAnnouncements(conn) {
     console.log(chalk.cyan('[announcements] ✓ anti-llamada'));
     console.log(chalk.cyan('[announcements] ✓ anti-delete + edit log'));
     console.log(chalk.cyan('[announcements] ✓ AFK presence tracking'));
+}
+
+// Hook de prueba para el comando #testwelcome / #testgoodbye.
+export function _testAnnounce(conn, event) {
+    return onParticipantsUpdate(conn, event);
 }

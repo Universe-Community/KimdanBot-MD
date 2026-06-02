@@ -101,7 +101,7 @@ const COMMAND_META = [
     // ─── INFO ───
     { names: ['ping', 'test', 'velocidad'], category: 'info', description: 'Mide la latencia del bot' },
     { names: ['menu', 'help', 'menu1'], category: 'info', description: 'Lista de comandos' },
-    { names: ['info', 'infobot', 'infokim'], category: 'info', description: 'Información del bot' },
+    { names: ['info', 'infokim'], category: 'info', description: 'Información del bot' },
     { names: ['estado', 'status', 'heydan'], category: 'info', description: 'Estado del sistema' },
     { names: ['runtime', 'uptime'], category: 'info', description: 'Tiempo activo del bot' },
     { names: ['creador', 'owner', 'dono'], category: 'info', description: 'Datos del creador' },
@@ -203,13 +203,8 @@ const COMMAND_META = [
     // ─── RPG ───
     { names: ['reg', 'verificar', 'registrar'], category: 'rpg', description: 'Regístrate (.reg nombre|edad)' },
     { names: ['unreg'], category: 'rpg', description: 'Cancela tu registro' },
-    { names: ['perfil', 'profile'], category: 'rpg', description: 'Tu perfil RPG' },
-    { names: ['bal', 'balance', 'diamond'], category: 'rpg', description: 'Tu balance' },
-    { names: ['claim', 'daily'], category: 'rpg', description: 'Reclama recompensa diaria' },
-    { names: ['work', 'trabajar', 'w'], category: 'rpg', description: 'Trabaja por dinero' },
     { names: ['mine', 'minar'], category: 'rpg', description: 'Mina por diamantes' },
-    { names: ['top', 'lb', 'leaderboard'], category: 'rpg', description: 'Ranking de usuarios' },
-    { names: ['rob', 'robar'], category: 'rpg', description: 'Roba dinero a otro usuario' },
+    { names: ['top', 'lb'], category: 'rpg', description: 'Ranking de usuarios' },
 
     // ─── GAME ───
     { names: ['ppt', 'suit'], category: 'game', description: 'Piedra, papel, tijera' },
@@ -929,8 +924,7 @@ export async function execute(conn, m, rawCommand, args, text) {
             }
 
             case 'promote': {
-                needGroupAdmin(m);
-                needBotAdmin(m);
+                if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
                 const t = resolveTarget(m, text);
                 if (!t) return m.reply('Menciona o cita al usuario.');
                 try {

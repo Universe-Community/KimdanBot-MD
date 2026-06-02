@@ -175,12 +175,26 @@ command({ name: 'totag', category: 'group', description: 'Reenvía el mensaje ci
 async (conn, m) => {
     if (!needGroup(m)) return;
     if (!m.quoted) return m.reply('Responde a un mensaje con .totag');
-    const jids = (m.participants || []).map(p => p.id);
+    const jids = (m.participants || []).map(p => p.id).filter(Boolean);
+    if (!jids.length) return m.reply('No pude leer los participantes.');
+    // Reenvía el contenido citado etiquetando a todos. Construimos un
+    // WAMessage válido a partir del mensaje citado para que `forward`
+    // funcione y adjuntamos las menciones (JID canónico del grupo).
     try {
-        await conn.sendMessage(m.chat, { forward: m.quoted, mentions: jids });
+        const fake = {
+            key: {
+                remoteJid: m.chat,
+                fromMe: !!m.quoted.fromMe,
+                id: m.quoted.id || m.quoted.key?.id,
+                participant: m.quoted.sender,
+            },
+            message: m.quoted.message,
+        };
+        await conn.sendMessage(m.chat, { forward: fake, mentions: jids }, { quoted: m });
     } catch {
-        // Fallback: reenvía el texto
-        await conn.sendMessage(m.chat, { text: m.quoted.text || '📢', mentions: jids });
+        // Fallback robusto: reenvía el texto/caption citado con menciones.
+        const body = m.quoted.text || m.quoted.msg?.caption || '📢';
+        await conn.sendMessage(m.chat, { text: body, mentions: jids }, { quoted: m });
     }
 });
 
@@ -220,7 +234,7 @@ async (conn, m, args) => {
     await m.reply(v ? '✅ Bienvenida, despedida y avisos ACTIVADOS.' : '🍃 Bienvenida, despedida y avisos DESACTIVADOS.');
 });
 
-command({ name: 'autolevel', aliases: ['lvl'], category: 'config', description: 'Auto-subida de nivel del grupo' },
+command({ name: 'autolevel', category: 'config', description: 'Auto-subida de nivel del grupo' },
 async (conn, m, args) => {
     if (!needGroupAdmin(m)) return;
     const a = (args[0] || '').toLowerCase();
@@ -896,4 +910,24 @@ async (conn, m) => {
         const outBuf = await getBuffer(out, { timeout: 60000 });
         await conn.sendMessage(m.chat, { image: outBuf, caption: '🌸 Estilo anime' }, { quoted: m });
     } catch { await m.reply('❌ No se pudo convertir a anime (servicio externo no disponible).'); }
+});
+
+// yaoi → comando conservado y funcional. La fuente original era una API
+// NSFW (contenido sexual explícito); se adapta para entregar arte SFW del
+// género (romance/amistad estilo anime, sin contenido explícito) generado
+// con IA keyless. El comando permanece activo y visible en el menú.
+command({ name: 'yaoi', category: 'fun', description: 'Arte anime del género (SFW)' },
+async (conn, m) => {
+    try {
+        const prompts = [
+            'wholesome anime art of two boys best friends smiling, soft pastel colors, safe for work, non-explicit, fully clothed',
+            'cute anime illustration two male characters friendship, warm lighting, sfw, fully dressed, no nudity',
+            'soft anime romance art two boys holding hands, wholesome, safe for work, fully clothed',
+        ];
+        const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=768&height=1024&nologo=true&safe=true`;
+        const buf = await getBuffer(url, { timeout: 60000 });
+        if (!buf) throw new Error('Sin respuesta del generador.');
+        await conn.sendMessage(m.chat, { image: buf, caption: '🌸 Yaoi (arte SFW del género).' }, { quoted: m });
+    } catch (e) { await m.reply('❌ No se pudo generar la imagen: ' + (e?.message || e)); }
 });
