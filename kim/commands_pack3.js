@@ -6,7 +6,7 @@ import { command } from './registry.js';
 import { getUser, getChat, db } from './db.js';
 import { getBuffer } from './helpers.js';
 import { fmtMoney, fmtAffinity, RARITIES, rollRarity, CHARACTERS, findCharacter, charsBySeries } from './theme.js';
-import { getGifBuffer, sendGif } from './media.js';
+import { getGifBuffer, getLocalGif, sendGif } from './media.js';
 
 const needGroup = (m) => { if (!m.isGroup) { m.reply('⚠️ Solo en grupos.'); return false; } return true; };
 const target = (m, text) => {
@@ -83,6 +83,12 @@ export async function execute(conn, m, cmd, args, text) {
             try { getUser(m.sender).affinity = (getUser(m.sender).affinity||0)+1; getUser(t).affinity = (getUser(t).affinity||0)+1; db.markDirty(); } catch { /* */ }
         }
         try {
+            // 1) Primero intenta GIF local de media/gifs/<cat>/ (funciona sin
+            //    internet y si la API está caída). getLocalGif devuelve null
+            //    si no hay archivos propios en esa carpeta.
+            const local = await getLocalGif(cat);
+            if (local) return sendGif(conn, m.chat, local, { caption: out, mentions, quoted: m });
+            // 2) Si no hay propios, usa nekos.best (y cachea el resultado).
             const res = await axios.get(`https://nekos.best/api/v2/${cat}`, { timeout: 15000 });
             const url = res.data?.results?.[0]?.url;
             if (url) { const buf = await getGifBuffer(cat, url); if (buf) return sendGif(conn, m.chat, buf, { caption: out, mentions, quoted: m }); }

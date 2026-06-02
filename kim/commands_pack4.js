@@ -6,7 +6,7 @@ import axios from 'axios';
 import { command, commandCount, aliasCount, buildCmdMap } from './registry.js';
 import { getUser, getChat, getSettings, db } from './db.js';
 import { getBuffer } from './helpers.js';
-import { fmtMoney, fmtAffinity, CHARACTERS, charsBySeries, BL_QUOTES, BL_RECS } from './theme.js';
+import { fmtMoney, fmtAffinity, CHARACTERS, charsBySeries, BL_QUOTES, BL_RECS, isVip } from './theme.js';
 import { box } from './ui.js';
 import * as biblioteca from '../libs/biblioteca.js';
 
@@ -91,7 +91,7 @@ export async function execute(conn, m, cmd, args, text) {
     case 'profile': {
         const t = target(m, text) || m.sender; const u = getUser(t);
         const caption = box(`👤 PERFIL · @${t.split('@')[0]}`, [
-            `⭐ Nivel ${u.level} · EXP ${u.exp} · ${u.role}`,
+            `${isVip(u, m) ? '👑 VIP · ' : ''}⭐ Nivel ${u.level} · EXP ${u.exp} · ${u.role}`,
             `💜 ${u.money} JX  🏦 ${u.bank}`,
             `💎 ${u.corazones} HG  🤝 ${u.affinity} AP`,
             `🎴 Personajes: ${(u.characters||[]).length}`,

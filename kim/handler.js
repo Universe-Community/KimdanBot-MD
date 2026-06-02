@@ -30,6 +30,9 @@ import './commands_extra.js'; // ← comandos migrados desde el bot de referenci
 import './commands_pack2.js'; // ← #tag + economía oficial JX/HG/AP + actividad + afinidad
 import './commands_pack3.js'; // ← gacha BL/Yaoi + interacciones anime SFW (GIFs)
 import './commands_pack4.js'; // ← perfiles, admin, utilidades, descargas, subbots
+import './commands_pack5.js'; // ← sistema BL: búsqueda manga/manhwa/novelas + colección
+import './commands_pack6.js'; // ← sistema completo de stickers y packs
+import './commands_pack7.js'; // ← VIP + comandos owner de economía (dar/quitar dinero, exp, diamantes)
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 
@@ -43,6 +46,14 @@ export class Handler {
         this.ownerSet = new Set(
             (Array.isArray(global.owner) ? global.owner : [])
                 .map(o => Array.isArray(o) ? o[0] : null)
+                .filter(Boolean)
+        );
+
+        // VIP estáticos declarados en settings.js (global.vip = [...global.owner]).
+        // Mismo formato que owner: ['numero', 'nombre', bool].
+        this.vipSet = new Set(
+            (Array.isArray(global.vip) ? global.vip : [])
+                .map(o => Array.isArray(o) ? o[0] : (typeof o === 'string' ? o.split('@')[0] : null))
                 .filter(Boolean)
         );
 
@@ -118,6 +129,15 @@ export class Handler {
         const numPn  = jidAlt ? String(jidAlt).split('@')[0] : '';
         return (numLid && this.ownerSet.has(numLid)) ||
                (numPn  && this.ownerSet.has(numPn));
+    }
+
+    /** ¿El sender está en la lista VIP estática de settings.js (global.vip)? */
+    _isVipGlobal(jid, jidAlt) {
+        if (!this.vipSet || this.vipSet.size === 0) return false;
+        const numLid = jid ? String(jid).split('@')[0] : '';
+        const numPn  = jidAlt ? String(jidAlt).split('@')[0] : '';
+        return (numLid && this.vipSet.has(numLid)) ||
+               (numPn  && this.vipSet.has(numPn));
     }
 
     /**
@@ -288,6 +308,16 @@ export class Handler {
                 : [];
             m.text2 = m.args.join(' ');
             m.isOwner = (await this._isOwnerAsync(m.sender, m.senderAlt)) || m.fromMe;
+            // VIP: lista estática de settings.js (global.vip) O flag en la DB
+            // (otorgado con .setvip). El owner siempre cuenta como VIP.
+            {
+                let dbVip = false;
+                try {
+                    const u = getUser(m.sender);
+                    dbVip = !!u?.vip && (!u.vipUntil || Date.now() <= u.vipUntil);
+                } catch { /* */ }
+                m.isVip = m.isOwner || this._isVipGlobal(m.sender, m.senderAlt) || dbVip;
+            }
 
             // Metadata de grupo (cacheada) + admin checks LID-AWARE
             if (m.isGroup) {

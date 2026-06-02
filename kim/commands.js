@@ -18,7 +18,7 @@ import moment from 'moment-timezone';
 import axios from 'axios';
 
 import { command, buildMenu, commandCount, aliasCount } from './registry.js';
-import { fmtMoney, fmtPremium, fmtAffinity } from './theme.js';
+import { fmtMoney, fmtPremium, fmtAffinity, vipMult, isVip, VIP } from './theme.js';
 import { runtime, getBuffer, isUrl } from './helpers.js';
 import { getUser, getChat, getSettings, db } from './db.js';
 
@@ -176,7 +176,6 @@ const COMMAND_META = [
     { names: ['encuesta', 'poll'], category: 'group', description: 'Crea una encuesta' },
 
     // ─── STICKER / MEDIA ───
-    { names: ['s', 'sticker'], category: 'sticker', description: 'Convierte imagen/video en sticker' },
     { names: ['attp'], category: 'sticker', description: 'Sticker animado con texto' },
     { names: ['toimg', 'toimagen'], category: 'sticker', description: 'Convierte sticker en imagen' },
     { names: ['tomp3', 'toaudio'], category: 'sticker', description: 'Convierte video en audio' },
@@ -1155,38 +1154,6 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             // ═════════════════ STICKER / MEDIA ═════════════════
 
-            case 's': {
-                const target = m.quoted || m;
-                const mime = target.msg?.mimetype || target.mimetype || '';
-                if (!target.download) {
-                    return m.reply('🌺 Responde a una *imagen* o *video* con el comando.');
-                }
-                try {
-                    if (/image|webp/.test(mime)) {
-                        await m.reply(global.mess?.wait || '🤚 Un momento...');
-                        const media = await target.download();
-                        await conn.sendImageAsSticker(m.chat, media, m, {
-                            packname: global.packname, author: global.author,
-                        });
-                    } else if (/video|gif/.test(mime)) {
-                        const seconds = (target.msg || target).seconds;
-                        if (seconds && seconds > 20) {
-                            return m.reply('🚫 *ERROR*\n⏳ Máximo 20 segundos.');
-                        }
-                        await m.reply(global.mess?.wait || '🤚 Un momento...');
-                        const media = await target.download();
-                        await conn.sendVideoAsSticker(m.chat, media, m, {
-                            packname: global.packname, author: global.author,
-                        });
-                    } else {
-                        return m.reply('🌺 Responde a una *imagen* o *video* con el comando.');
-                    }
-                } catch (e) {
-                    await m.reply('❌ ' + (e?.message || e));
-                }
-                break;
-            }
-
             case 'attp': {
                 if (!text) return m.reply('Uso: .attp <texto>');
                 try {
@@ -1512,14 +1479,17 @@ export async function execute(conn, m, rawCommand, args, text) {
             case 'mine': {
                 if (cooldown(m, 'lastmine', 15 * 60 * 1000)) return;
                 const u = getUser(m.sender);
-                const jx = Math.floor(Math.random() * 400) + 100;       // 100–500 JX
+                const mult = vipMult(u, m);
+                const jx = (Math.floor(Math.random() * 400) + 100) * mult;   // 100–500 JX (x2 VIP)
                 u.money = (u.money || 0) + jx;
-                const gem = Math.random() < 0.08 ? 1 : 0;               // rara veta de HG
+                let gem = Math.random() < 0.08 ? 1 : 0;                       // rara veta de HG
+                gem *= mult;                                                  // VIP duplica también la veta
                 u.corazones = (u.corazones || 0) + gem;
-                u.exp = (u.exp || 0) + 8;
+                u.diamond = (u.diamond || 0) + gem;
+                u.exp = (u.exp || 0) + 8 * mult;
                 u.lastmine = Date.now();
                 db.markDirty();
-                await m.reply(`⛏ Minaste y extrajiste ${fmtMoney(jx)}${gem ? ` y ${fmtPremium(gem)} 💎 (¡veta rara!)` : ''} (+8 exp).`);
+                await m.reply(`⛏ Minaste y extrajiste ${fmtMoney(jx)}${gem ? ` y ${fmtPremium(gem)} 💎 (¡veta rara!)` : ''} (+${8 * mult} exp).${mult > 1 ? ' 👑 _Bono VIP x2_' : ''}`);
                 break;
             }
 

@@ -4,7 +4,7 @@
 
 import { command } from './registry.js';
 import { getUser, getChat, db } from './db.js';
-import { fmtMoney, fmtPremium, fmtAffinity, CURRENCY } from './theme.js';
+import { fmtMoney, fmtPremium, fmtAffinity, CURRENCY, vipMult, isVip } from './theme.js';
 import { box, bar } from './ui.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -103,9 +103,11 @@ export async function execute(conn, m, cmd, args, text) {
         const u = getUser(m.sender); const left = cd(u, 'lastwork', 3600000);
         if (left) return m.reply(`😮‍💨 Estás cansado. Descansa ${fmtDur(left)}.`);
         const jobs = ['dibujaste un doujinshi BL', 'atendiste una cafetería temática', 'narraste un drama CD', 'vendiste fanart en una convención', 'editaste un capítulo de manhwa'];
-        const earn = 200 + Math.floor(Math.random() * 800);
-        u.money += earn; u.exp += 50; u.lastwork = Date.now(); db.markDirty();
-        await m.reply(`💼 ${jobs[Math.floor(Math.random()*jobs.length)]} y ganaste ${fmtMoney(earn)} (+50 EXP).`);
+        const mult = vipMult(u, m);
+        const earn = (200 + Math.floor(Math.random() * 800)) * mult;
+        const xp = 50 * mult;
+        u.money += earn; u.exp += xp; u.lastwork = Date.now(); db.markDirty();
+        await m.reply(`💼 ${jobs[Math.floor(Math.random()*jobs.length)]} y ganaste ${fmtMoney(earn)} (+${xp} EXP).${mult > 1 ? ' 👑 _Bono VIP x2_' : ''}`);
         break;
     }
     case 'crime': {

@@ -1,0 +1,172 @@
+// kim/commands_pack7.js — Comandos de OWNER para economía y rango VIP.
+// Permite al owner: otorgar/quitar VIP (permanente o temporal), y
+// dar/quitar/fijar dinero (JX), EXP y diamantes (HG) a cualquier usuario.
+// Arquitectura nativa: COMMAND_META + switch/case.
+
+import { command } from './registry.js';
+import { getUser, db } from './db.js';
+import { box } from './ui.js';
+import { fmtMoney, fmtPremium, isVip, VIP } from './theme.js';
+
+const needOwner = (m) => { if (!m.isOwner) { m.reply('⚠️ Solo el propietario puede usar este comando.'); return false; } return true; };
+
+// Resuelve objetivo por mención, cita o número suelto.
+function target(m, text) {
+    if (m.mentionedJid?.[0]) return m.mentionedJid[0];
+    if (m.quoted?.sender) return m.quoted.sender;
+    const n = String(text || '').replace(/[^0-9]/g, '');
+    if (n.length >= 8) return n + '@s.whatsapp.net';
+    return null;
+}
+// Extrae la primera cantidad numérica del texto/args.
+function amountOf(args, text) {
+    const fromArgs = (args || []).map(a => parseInt(a)).find(x => Number.isFinite(x));
+    if (Number.isFinite(fromArgs)) return fromArgs;
+    const mt = String(text || '').match(/-?\d+/);
+    return mt ? parseInt(mt[0]) : NaN;
+}
+// Duración VIP opcional: 7d, 12h, 30m → ms (0 = permanente).
+function parseDuration(text) {
+    const mt = String(text || '').match(/(\d+)\s*(d|h|m)/i);
+    if (!mt) return 0;
+    const n = parseInt(mt[1]); const unit = mt[2].toLowerCase();
+    return n * (unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : 60000);
+}
+const fmtUntil = (ms) => ms ? new Date(ms).toLocaleString('es') : 'permanente';
+
+const COMMAND_META = [
+    // —— Rango VIP ——
+    { names: ['setvip', 'addvip', 'darvip'], category: 'owner', description: 'Otorga rango VIP a un usuario (owner). Opcional: duración 7d/12h' },
+    { names: ['delvip', 'removevip', 'quitarvip'], category: 'owner', description: 'Quita el rango VIP (owner)' },
+    { names: ['vipinfo', 'vipstatus'], category: 'owner', description: 'Muestra el estado VIP de un usuario' },
+    { names: ['viplist', 'vips'], category: 'owner', description: 'Lista los usuarios VIP (owner)' },
+    // —— Dar/quitar/fijar dinero (JX) ——
+    { names: ['addmoney', 'darmoney', 'addcoins'], category: 'owner', description: 'Da Jinx Coins a un usuario (owner)' },
+    { names: ['delmoney', 'quitarmoney', 'removecoins'], category: 'owner', description: 'Quita Jinx Coins a un usuario (owner)' },
+    { names: ['setmoney', 'fijarmoney'], category: 'owner', description: 'Fija los Jinx Coins de un usuario (owner)' },
+    // —— Dar/quitar EXP ——
+    { names: ['addexp', 'darexp'], category: 'owner', description: 'Da EXP a un usuario (owner)' },
+    { names: ['delexp', 'quitarexp'], category: 'owner', description: 'Quita EXP a un usuario (owner)' },
+    // —— Dar/quitar diamantes (HG) ——
+    { names: ['adddiamond', 'dardiamante', 'adddiamante', 'addhg'], category: 'owner', description: 'Da diamantes (HG) a un usuario (owner)' },
+    { names: ['deldiamond', 'quitardiamante', 'delhg'], category: 'owner', description: 'Quita diamantes (HG) a un usuario (owner)' },
+];
+
+export async function execute(conn, m, cmd, args, text) {
+    if (!needOwner(m)) return;
+    const t = target(m, text);
+
+    switch (cmd) {
+
+    // ═══════════ RANGO VIP ═══════════
+    case 'setvip': {
+        if (!t) return m.reply('Uso: .setvip @usuario [duración: 7d/12h/30m]\n(sin duración = permanente)');
+        const u = getUser(t);
+        const dur = parseDuration(text);
+        u.vip = true; u.premium = true; u.vipSince = Date.now();
+        u.vipUntil = dur ? Date.now() + dur : 0;
+        db.markDirty();
+        await conn.sendMessage(m.chat, { text: box('👑 VIP OTORGADO', [
+            `Usuario: @${t.split('@')[0]}`,
+            `Estado: VIP activo`,
+            `Expira: ${fmtUntil(u.vipUntil)}`,
+            `Beneficio: x${VIP.mult} en 💼 trabajar y ⛏ minar`,
+        ]), mentions: [t] }, { quoted: m });
+        break;
+    }
+    case 'delvip': {
+        if (!t) return m.reply('Uso: .delvip @usuario');
+        const u = getUser(t);
+        if (!u.vip) return m.reply('Ese usuario no es VIP.');
+        u.vip = false; u.premium = false; u.vipUntil = 0; db.markDirty();
+        await conn.sendMessage(m.chat, { text: `🚫 Rango VIP retirado a @${t.split('@')[0]}.`, mentions: [t] }, { quoted: m });
+        break;
+    }
+    case 'vipinfo': {
+        const who = t || m.sender; const u = getUser(who);
+        const num = who.split('@')[0];
+        const staticVip = (Array.isArray(global.vip) ? global.vip : [])
+            .some(o => (Array.isArray(o) ? o[0] : String(o).split('@')[0]) === num);
+        const active = staticVip || isVip(u);
+        await conn.sendMessage(m.chat, { text: box('👑 ESTADO VIP', [
+            `Usuario: @${num}`,
+            `VIP: ${active ? 'sí ✅' : 'no'}`,
+            staticVip ? 'Origen: lista fija (settings.js)' : (isVip(u) ? 'Origen: otorgado con .setvip' : '—'),
+            (isVip(u) && !staticVip) ? `Expira: ${fmtUntil(u.vipUntil)}` : '—',
+        ]), mentions: [who] }, { quoted: m });
+        break;
+    }
+    case 'viplist': {
+        const lines = [];
+        // 1) VIP estáticos de settings.js (global.vip)
+        const staticVips = (Array.isArray(global.vip) ? global.vip : [])
+            .map(o => Array.isArray(o) ? o[0] : (typeof o === 'string' ? o.split('@')[0] : null))
+            .filter(Boolean);
+        const ment = [];
+        for (const num of staticVips) {
+            const jid = num + '@s.whatsapp.net';
+            lines.push(`• @${num} — fijo (settings.js)`); ment.push(jid);
+        }
+        // 2) VIP otorgados por .setvip (flag en la DB), sin duplicar
+        for (const [jid, u] of Object.entries(db.data.users || {})) {
+            if (!isVip(u)) continue;
+            const num = jid.split('@')[0];
+            if (staticVips.includes(num)) continue;
+            lines.push(`• @${num} — ${u.vipUntil ? 'hasta ' + fmtUntil(u.vipUntil) : 'permanente'}`); ment.push(jid);
+        }
+        if (!lines.length) return m.reply('No hay usuarios VIP actualmente.');
+        await conn.sendMessage(m.chat, { text: box(`👑 USUARIOS VIP · ${lines.length}`, lines), mentions: ment }, { quoted: m });
+        break;
+    }
+
+    // ═══════════ DINERO (JX) ═══════════
+    case 'addmoney': case 'delmoney': case 'setmoney': {
+        if (!t) return m.reply(`Uso: .${cmd} @usuario <cantidad>`);
+        const amt = amountOf(args, text.replace(/@?\d{6,}/g, ''));
+        if (!Number.isFinite(amt) || amt < 0) return m.reply('Indica una cantidad válida (entero ≥ 0).');
+        const u = getUser(t);
+        if (cmd === 'addmoney') u.money = (u.money || 0) + amt;
+        else if (cmd === 'delmoney') u.money = Math.max(0, (u.money || 0) - amt);
+        else u.money = amt;
+        db.markDirty();
+        const verbo = cmd === 'addmoney' ? 'Diste' : cmd === 'delmoney' ? 'Quitaste' : 'Fijaste en';
+        await conn.sendMessage(m.chat, { text: `💜 ${verbo} ${fmtMoney(amt)} a @${t.split('@')[0]}.\nSaldo actual: ${fmtMoney(u.money)}.`, mentions: [t] }, { quoted: m });
+        break;
+    }
+
+    // ═══════════ EXP ═══════════
+    case 'addexp': case 'delexp': {
+        if (!t) return m.reply(`Uso: .${cmd} @usuario <cantidad>`);
+        const amt = amountOf(args, text.replace(/@?\d{6,}/g, ''));
+        if (!Number.isFinite(amt) || amt < 0) return m.reply('Indica una cantidad válida.');
+        const u = getUser(t);
+        u.exp = cmd === 'addexp' ? (u.exp || 0) + amt : Math.max(0, (u.exp || 0) - amt);
+        db.markDirty();
+        await conn.sendMessage(m.chat, { text: `⬆️ ${cmd === 'addexp' ? 'Diste' : 'Quitaste'} ${amt} EXP a @${t.split('@')[0]}.\nEXP actual: ${u.exp} (nivel ${u.level}).`, mentions: [t] }, { quoted: m });
+        break;
+    }
+
+    // ═══════════ DIAMANTES (HG) ═══════════
+    case 'adddiamond': case 'deldiamond': {
+        if (!t) return m.reply(`Uso: .${cmd} @usuario <cantidad>`);
+        const amt = amountOf(args, text.replace(/@?\d{6,}/g, ''));
+        if (!Number.isFinite(amt) || amt < 0) return m.reply('Indica una cantidad válida.');
+        const u = getUser(t);
+        const add = cmd === 'adddiamond';
+        u.diamond = add ? (u.diamond || 0) + amt : Math.max(0, (u.diamond || 0) - amt);
+        u.corazones = add ? (u.corazones || 0) + amt : Math.max(0, (u.corazones || 0) - amt);
+        db.markDirty();
+        await conn.sendMessage(m.chat, { text: `💎 ${add ? 'Diste' : 'Quitaste'} ${fmtPremium(amt)} a @${t.split('@')[0]}.\nDiamantes actuales: ${u.diamond}.`, mentions: [t] }, { quoted: m });
+        break;
+    }
+
+    }
+}
+
+for (const meta of COMMAND_META) {
+    const canonical = meta.names[0];
+    command({ name: canonical, aliases: meta.names.slice(1), category: meta.category, description: meta.description },
+        (conn, m, args, text) => execute(conn, m, canonical, args, text));
+}
+export { COMMAND_META };
+export default true;

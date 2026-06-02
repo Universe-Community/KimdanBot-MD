@@ -39,6 +39,26 @@ function touchHot(key, buf) {
 export async function getGifBuffer(category, url) {
     const safeCat = String(category).replace(/[^\w-]/g, '_');
     const dir = path.join(GIF_ROOT, safeCat);
+
+    // 1) PRIORIDAD: GIFs/MP4 propios que el usuario haya colocado en
+    //    media/gifs/<categoria>/  (cualquier nombre, p.ej. miclip.mp4).
+    //    Se ignoran los archivos-caché (nombre = hash de 16 hex) y los
+    //    marcadores .gitkeep/README. Si hay propios, se usa uno al azar.
+    try {
+        if (fs.existsSync(dir)) {
+            const own = fs.readdirSync(dir).filter(f =>
+                /\.(mp4|gif|webp)$/i.test(f) && !/^[0-9a-f]{16}\./i.test(f));
+            if (own.length) {
+                const pick = own[Math.floor(Math.random() * own.length)];
+                const fp = path.join(dir, pick);
+                if (HOT.has(fp)) { const b = HOT.get(fp); touchHot(fp, b); return b; }
+                const buf = await fs.promises.readFile(fp);
+                if (buf?.length > 100) { touchHot(fp, buf); return buf; }
+            }
+        }
+    } catch { /* si algo falla, se usa la fuente remota */ }
+
+    // 2) Si no hay propios, cae a la caché por URL / descarga remota.
     const ext = (url.split('?')[0].split('.').pop() || 'mp4').toLowerCase().slice(0, 4);
     const file = path.join(dir, `${hashUrl(url)}.${/gif|mp4|webp/.test(ext) ? ext : 'mp4'}`);
     const key = file;
@@ -70,6 +90,28 @@ export async function sendGif(conn, jid, buf, { caption = '', mentions = [], quo
         caption,
         mentions,
     }, quoted ? { quoted } : {});
+}
+
+/**
+ * Devuelve un buffer de un GIF/MP4 PROPIO de media/gifs/<categoria>/ elegido
+ * al azar, o null si el usuario no ha colocado archivos propios ahí.
+ * Ignora los archivos-caché (nombre = hash de 16 hex) y los marcadores.
+ */
+export async function getLocalGif(category) {
+    const safeCat = String(category).replace(/[^\w-]/g, '_');
+    const dir = path.join(GIF_ROOT, safeCat);
+    try {
+        if (!fs.existsSync(dir)) return null;
+        const own = fs.readdirSync(dir).filter(f =>
+            /\.(mp4|gif|webp)$/i.test(f) && !/^[0-9a-f]{16}\./i.test(f));
+        if (!own.length) return null;
+        const pick = own[Math.floor(Math.random() * own.length)];
+        const fp = path.join(dir, pick);
+        if (HOT.has(fp)) { const b = HOT.get(fp); touchHot(fp, b); return b; }
+        const buf = await fs.promises.readFile(fp);
+        if (buf?.length > 100) { touchHot(fp, buf); return buf; }
+    } catch { /* */ }
+    return null;
 }
 
 /** Limpieza opcional: borra GIFs cacheados más viejos que `days`. */

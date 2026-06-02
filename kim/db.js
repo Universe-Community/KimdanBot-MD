@@ -15,6 +15,7 @@ const DEFAULT_USER = () => ({
     married: null, birthday: null, genre: null, description: '',
     afkTime: -1, afkReason: '',
     warn: 0, banned: false, premium: false,
+    vip: false, vipSince: 0, vipUntil: 0,   // rango VIP (x2 en trabajar/minar)
     Language: 'es', lang: null, spam: 0, autolevelup: false,
 });
 

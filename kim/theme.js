@@ -183,3 +183,19 @@ export const BL_RECS = [
     { t: 'Yuri!!! on Ice', d: 'Patinaje artístico y una relación que inspira al mundo.' },
     { t: 'Sign', d: 'Romance con lengua de señas, sensible y cálido.' },
 ];
+
+// ─── Rango VIP ──────────────────────────────────────────────────────
+// Un usuario VIP recibe el DOBLE de dinero, EXP y diamantes al trabajar
+// y minar. El VIP puede ser permanente (vipUntil = 0) o temporal.
+export const VIP = { mult: 2, emoji: '👑', name: 'VIP' };
+
+/** ¿El usuario es VIP ahora? Considera expiración temporal.
+ *  Si se pasa el mensaje `m`, también respeta m.isVip (global.vip de settings.js). */
+export function isVip(u, m) {
+    if (m?.isVip) return true;              // lista estática global.vip / owner / flag handler
+    if (!u?.vip) return false;
+    if (u.vipUntil && Date.now() > u.vipUntil) return false; // expirado
+    return true;
+}
+/** Multiplicador de recompensas: 2 si VIP activo, 1 si no. */
+export function vipMult(u, m) { return isVip(u, m) ? VIP.mult : 1; }
