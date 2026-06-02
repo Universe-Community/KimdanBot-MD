@@ -11,7 +11,12 @@ global.owner = [
     ['573234628903', 'creador', true],
     ['573044062173', '', false],
     ['50685690440',  '', false],
-    ['573173090446',  'owner', true],
+    ['50433086279',  '', false],
+    ['573148243189', '', false],
+    ['5214434703586', 'Zam', true],
+    ['5217294888993', '', false],
+    ['51968374620', 'Ale', true],
+    ['522221496388', 'suro', true],
 ];
 global.vip = [...global.owner];
 global.aport = [...global.vip];
