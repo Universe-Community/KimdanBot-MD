@@ -84,6 +84,18 @@ const DEFAULT_GROUP_PIC = 'https://i.ibb.co/RBx5SQC/avatar-group-large-v2.png';
 const _groupPicCache = new Map();
 const GROUP_PIC_TTL = 30 * 60 * 1000;
 
+/**
+ * Invalida (borra) la foto cacheada de un grupo. Se llama cuando el
+ * icono del grupo cambia (groups.update → icon) o tras .setppgrupo,
+ * para que el próximo anuncio que use la foto del grupo la vuelva a
+ * descargar. Antes esta función se invocaba pero NO existía, lo que
+ * lanzaba un ReferenceError silencioso y rompía el aviso de cambio de
+ * foto. Se exporta para que commands.js pueda importarla.
+ */
+export function invalidateGroupPic(jid) {
+    if (jid) _groupPicCache.delete(jid);
+}
+
 // Cache de mensajes recientes por chat (para anti-delete y edit log)
 // chatJid → Map<messageId, {raw, savedAt, sender, body}>
 const _messageCache = new Map();
@@ -316,16 +328,30 @@ async function onParticipantsUpdate(conn, event) {
         const mentions = [numForMention];
         if (isByAdmin && authorForMention) mentions.push(authorForMention);
 
-        // ── FIX MENCIÓN ───────────────────────────────────────────
-        // Las menciones @<número> NO se renderizan como tags clickeables
-        // cuando el JID es un LID (WhatsApp no resuelve LIDs como contactos).
-        // Solución: si tenemos el NOMBRE del usuario, lo mostramos en negrita
-        // en lugar de @<número>. La mención sigue en `mentions` para que el
-        // usuario reciba la notificación, pero el texto se ve limpio.
+        // ── FIX MENCIÓN (igual que el bot de referencia) ───────────
+        // Una mención solo se renderiza como tag clickeable cuando el
+        // @<número> del TEXTO coincide EXACTAMENTE con el user-part del
+        // JID incluido en `mentions`. El bug anterior derivaba el número
+        // mostrado de `num` (que en v7 puede ser un LID) mientras que
+        // `mentions` llevaba el JID ya resuelto a PN → no coincidían y la
+        // mención no se activaba. Ahora el número mostrado se deriva SIEMPRE
+        // del mismo JID que va en `mentions`, garantizando la mención en
+        // todos los casos (PN o LID).
+        const numMentionClean    = String(numForMention || num).split('@')[0];
+        const authorMentionClean = authorForMention
+            ? String(authorForMention).split('@')[0]
+            : (authorClean || '');
+
+        // Si conocemos el nombre, lo mostramos junto al tag clickeable
+        // (`Nombre @número`); si no, solo el tag `@número`.
         const userName   = getDisplayName(num, conn, meta);
         const authorName = author ? getDisplayName(author, conn, meta) : null;
-        const userTag    = userName   ? `*${userName}*`   : `@${numClean}`;
-        const authorTag  = authorName ? `*${authorName}*` : (authorClean ? `@${authorClean}` : '');
+        const userTag    = userName
+            ? `*${userName}* @${numMentionClean}`
+            : `@${numMentionClean}`;
+        const authorTag  = authorName
+            ? `*${authorName}* @${authorMentionClean}`
+            : (authorMentionClean ? `@${authorMentionClean}` : '');
 
         // Foto de perfil del usuario (será la imagen principal del mensaje)
         const ppBuf = await getUserPicBuffer(conn, num);

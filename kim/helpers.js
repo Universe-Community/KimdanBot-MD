@@ -313,5 +313,67 @@ export function serializeConn(conn) {
         );
     };
 
+    // ── Stickers (adaptado a v7) ──────────────────────────────────
+    // Reemplaza los métodos legacy `sendImageAsSticker`/`sendVideoAsSticker`
+    // del bot de referencia, que dependían de `node-webpmux` + jimp. Aquí:
+    //   • Imagen → webp 512×512 con `sharp` (import dinámico, opcional).
+    //   • Video/gif → webp animado con `ffmpeg` (binario del sistema).
+    // Si la herramienta no está instalada, lanzan un Error claro que el
+    // comando captura y muestra al usuario (sin tumbar el bot).
+    conn.sendImageAsSticker = async (jid, src, quoted = null, opts = {}) => {
+        const input = Buffer.isBuffer(src) ? src : (isUrl(src) ? await getBuffer(src) : null);
+        if (!input) throw new Error('sendImageAsSticker: no se pudo obtener el buffer.');
+        let webp;
+        try {
+            const sharp = (await import('sharp')).default;
+            webp = await sharp(input)
+                .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+                .webp({ quality: 90 })
+                .toBuffer();
+        } catch (e) {
+            if (/Cannot find package|ERR_MODULE_NOT_FOUND/i.test(String(e?.message || e))) {
+                throw new Error('Falta la dependencia "sharp". Instálala con:  npm i sharp');
+            }
+            throw e;
+        }
+        return conn.sendMessage(jid, { sticker: webp, ...opts }, quoted ? { quoted } : {});
+    };
+
+    conn.sendVideoAsSticker = async (jid, src, quoted = null, opts = {}) => {
+        const input = Buffer.isBuffer(src) ? src : (isUrl(src) ? await getBuffer(src) : null);
+        if (!input) throw new Error('sendVideoAsSticker: no se pudo obtener el buffer.');
+        const { spawn } = await import('child_process');
+        const fsp = await import('fs');
+        const os = (await import('os')).default;
+        const path = (await import('path')).default;
+        const tmpIn  = path.join(os.tmpdir(), `kim_${Date.now()}.mp4`);
+        const tmpOut = path.join(os.tmpdir(), `kim_${Date.now()}.webp`);
+        await fsp.promises.writeFile(tmpIn, input);
+        const webp = await new Promise((resolve, reject) => {
+            const ff = spawn('ffmpeg', [
+                '-y', '-i', tmpIn,
+                '-vcodec', 'libwebp', '-vf',
+                "scale='min(512,iw)':min'(512,ih)':force_original_aspect_ratio=decrease,fps=15,pad=512:512:'(512-iw)/2':'(512-ih)/2':color=#00000000,split[a][b];[a]palettegen=reserve_transparent=on:transparency_color=ffffff[p];[b][p]paletteuse",
+                '-loop', '0', '-preset', 'default', '-an', '-vsync', '0', '-t', '10',
+                tmpOut,
+            ]);
+            ff.on('error', (err) =>
+                reject(/ENOENT/.test(String(err?.message || err))
+                    ? new Error('Falta "ffmpeg" en el sistema para stickers de video.')
+                    : err));
+            ff.on('close', async (code) => {
+                try {
+                    if (code !== 0) return reject(new Error('ffmpeg falló (código ' + code + ').'));
+                    resolve(await fsp.promises.readFile(tmpOut));
+                } catch (e) { reject(e); }
+                finally {
+                    fsp.promises.unlink(tmpIn).catch(() => {});
+                    fsp.promises.unlink(tmpOut).catch(() => {});
+                }
+            });
+        });
+        return conn.sendMessage(jid, { sticker: webp, ...opts }, quoted ? { quoted } : {});
+    };
+
     if (conn.user) conn.user.jid = conn.decodeJid(conn.user.id);
 }

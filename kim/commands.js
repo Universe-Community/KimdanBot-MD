@@ -99,14 +99,14 @@ const cooldown = (m, key, durationMs) => {
 
 const COMMAND_META = [
     // ─── INFO ───
-    { names: ['ping', 'test'], category: 'info', description: 'Mide la latencia del bot' },
+    { names: ['ping', 'test', 'velocidad'], category: 'info', description: 'Mide la latencia del bot' },
     { names: ['menu', 'help', 'menu1'], category: 'info', description: 'Lista de comandos' },
     { names: ['info', 'infobot', 'infokim'], category: 'info', description: 'Información del bot' },
     { names: ['estado', 'status', 'heydan'], category: 'info', description: 'Estado del sistema' },
     { names: ['runtime', 'uptime'], category: 'info', description: 'Tiempo activo del bot' },
     { names: ['creador', 'owner', 'dono'], category: 'info', description: 'Datos del creador' },
     { names: ['donar', 'donacion', 'donate'], category: 'info', description: 'Información de donaciones' },
-    { names: ['canales', 'cuentaskim', 'cuentas'], category: 'info', description: 'Canales oficiales' },
+    { names: ['canales', 'cuentaskim', 'cuentas', 'cuentaskimbot'], category: 'info', description: 'Canales oficiales' },
     { names: ['grupos', 'gruposkim'], category: 'info', description: 'Grupos oficiales' },
     { names: ['colaboradores'], category: 'info', description: 'Equipo del bot' },
 
@@ -148,16 +148,16 @@ const COMMAND_META = [
     { names: ['editlog', 'antieedit'], category: 'config', description: 'Log de mensajes editados' },
     { names: ['notifychanges', 'avisocambios'], category: 'config', description: 'Avisos de cambios del grupo' },
     // ─── CONFIG: settings globales / owner ───
-    { names: ['antiprivado', 'antipv'], category: 'config', description: 'Bloquea el chat privado a no-owners' },
+    { names: ['antiprivado', 'antipv', 'priv'], category: 'config', description: 'Bloquea el chat privado a no-owners' },
     { names: ['antillamada', 'anticall'], category: 'config', description: 'Rechaza llamadas automáticas' },
     { names: ['bloquearllamada', 'blockcall'], category: 'config', description: 'Además rechaza, bloquea al que llama' },
     { names: ['anuncios', 'announces', 'avisos'], category: 'config', description: 'Configura anuncios automáticos' },
 
     // ─── GROUP ───
-    { names: ['kick', 'echar', 'sacar'], category: 'group', description: 'Expulsa a un usuario' },
-    { names: ['add', 'agregar', 'invitar'], category: 'group', description: 'Agrega un número al grupo' },
+    { names: ['kick', 'echar', 'sacar', 'ban'], category: 'group', description: 'Expulsa a un usuario' },
+    { names: ['add', 'agregar', 'invitar', 'añadir'], category: 'group', description: 'Agrega un número al grupo' },
     { names: ['promote', 'daradmin'], category: 'group', description: 'Da admin a un usuario' },
-    { names: ['demote', 'quitaradmin'], category: 'group', description: 'Quita admin a un usuario' },
+    { names: ['demote', 'quitaradmin', 'quitar'], category: 'group', description: 'Quita admin a un usuario' },
     { names: ['link', 'linkgc', 'linkgroup'], category: 'group', description: 'Link de invitación del grupo' },
     { names: ['revoke', 'resetlink', 'anularlink'], category: 'group', description: 'Revoca el link' },
     { names: ['hidetag', 'notificar'], category: 'group', description: 'Menciona a todos sin mostrarlos' },
@@ -165,13 +165,13 @@ const COMMAND_META = [
     { names: ['del', 'delete'], category: 'group', description: 'Elimina el mensaje citado' },
     { names: ['admins', 'administradores'], category: 'group', description: 'Lista de administradores' },
     { names: ['infogrupo', 'groupinfo'], category: 'group', description: 'Info del grupo' },
-    { names: ['setname', 'setnameg', 'setnombre'], category: 'group', description: 'Cambia el nombre del grupo' },
-    { names: ['setdesc', 'setdescripcion', 'descripcion'], category: 'group', description: 'Cambia la descripción' },
+    { names: ['setname', 'setnameg', 'setnombre', 'setppname', 'nuevonombre', 'newnombre'], category: 'group', description: 'Cambia el nombre del grupo' },
+    { names: ['setdesc', 'setdescripcion', 'descripcion', 'descripción'], category: 'group', description: 'Cambia la descripción' },
     { names: ['warn', 'advertencia'], category: 'group', description: 'Advierte a un usuario' },
     { names: ['unwarn', 'quitardvertencia'], category: 'group', description: 'Quita una advertencia' },
     { names: ['listwarn'], category: 'group', description: 'Lista usuarios con advertencias' },
-    { names: ['grupo'], category: 'group', description: 'Abre/cierra el grupo' },
-    { names: ['setppgrupo', 'setppgroup', 'setppg'], category: 'group', description: 'Cambia la foto del grupo' },
+    { names: ['grupo', 'grup'], category: 'group', description: 'Abre/cierra el grupo' },
+    { names: ['setppgrupo', 'setppgroup', 'setppg', 'setpp', 'setppgrup'], category: 'group', description: 'Cambia la foto del grupo' },
     { names: ['encuesta', 'poll'], category: 'group', description: 'Crea una encuesta' },
 
     // ─── STICKER / MEDIA ───
@@ -230,7 +230,7 @@ const COMMAND_META = [
     // ─── MISC ───
     { names: ['afk'], category: 'misc', description: 'Te marca como AFK' },
     { names: ['report', 'reportar'], category: 'misc', description: 'Reporta un bug al owner' },
-    { names: ['idioma', 'language'], category: 'misc', description: 'Cambia el idioma (es/en)' },
+    { names: ['idioma', 'language', 'idiomas'], category: 'misc', description: 'Cambia el idioma (es/en)' },
 ];
 
 // ─── Map: alias.toLowerCase() → nombre canónico (names[0]) ─────────────
@@ -1101,9 +1101,11 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'grupo': {
                 if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-                const arg = (args[0] || '').toLowerCase();
+                let arg = (args[0] || '').toLowerCase();
+                if (arg === 'open') arg = 'abrir';
+                if (arg === 'close') arg = 'cerrar';
                 if (arg !== 'abrir' && arg !== 'cerrar') {
-                    return m.reply('Uso: .grupo abrir  |  .grupo cerrar');
+                    return m.reply('Uso: .grupo abrir | cerrar  (también open/close)');
                 }
                 try {
                     await conn.groupSettingUpdate(m.chat, arg === 'abrir' ? 'not_announcement' : 'announcement');
@@ -1148,21 +1150,36 @@ export async function execute(conn, m, rawCommand, args, text) {
             // ═════════════════ STICKER / MEDIA ═════════════════
 
             case 's': {
-                 const target = m.quoted || m;
-               const quoted = m.quoted ? m.quoted : m;
+                const target = m.quoted || m;
                 const mime = target.msg?.mimetype || target.mimetype || '';
-                if (/image/.test(mime)) {  
-               m.reply(mess.wait)  
-media = await quoted.download()  
-let encmedia = await conn.sendImageAsSticker(m.chat, media, m, { packname: global.packname, author: global.author })
-  await fs.unlinkSync(encmedia)  
-} else if (/video/.test(mime)) {  
-  await conn.sendMessage(from, {text: info.result, edit: key}, { quoted: fkontak })
-if ((quoted.msg || quoted).seconds > 20) return m. reply('✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _⏳𝐌𝐀́𝐗𝐈𝐌𝐎 𝟐𝟎 𝐒𝐄𝐆𝐔𝐍𝐃𝐎𝐒 ⏳_')  
-media = await quoted.download()  
-let encmedia = await conn.sendVideoAsSticker(m.chat, media, m, { packname: global.packname, author: global.author })
-} else {  
-m.reply(`✾⃛⃛ᬿ⃝⃞🚫 🅴 *𝐑𝐑𝐎𝐑*\n   ╰ᬊ _🌺𝐑𝐄𝐒𝐏𝐎𝐍𝐃𝐄 𝐀 𝐔𝐍𝐀 𝐈𝐌𝐀𝐆𝐄𝐍 /𝐕𝐈𝐃𝐄𝐎_`)}};  
+                if (!target.download) {
+                    return m.reply('🌺 Responde a una *imagen* o *video* con el comando.');
+                }
+                try {
+                    if (/image|webp/.test(mime)) {
+                        await m.reply(global.mess?.wait || '🤚 Un momento...');
+                        const media = await target.download();
+                        await conn.sendImageAsSticker(m.chat, media, m, {
+                            packname: global.packname, author: global.author,
+                        });
+                    } else if (/video|gif/.test(mime)) {
+                        const seconds = (target.msg || target).seconds;
+                        if (seconds && seconds > 20) {
+                            return m.reply('🚫 *ERROR*\n⏳ Máximo 20 segundos.');
+                        }
+                        await m.reply(global.mess?.wait || '🤚 Un momento...');
+                        const media = await target.download();
+                        await conn.sendVideoAsSticker(m.chat, media, m, {
+                            packname: global.packname, author: global.author,
+                        });
+                    } else {
+                        return m.reply('🌺 Responde a una *imagen* o *video* con el comando.');
+                    }
+                } catch (e) {
+                    await m.reply('❌ ' + (e?.message || e));
+                }
+                break;
+            }
 
             case 'attp': {
                 if (!text) return m.reply('Uso: .attp <texto>');

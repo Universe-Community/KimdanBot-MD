@@ -26,6 +26,7 @@ import { smsg, getGroupAdmins } from './helpers.js';
 import { getUser, getChat, getSettings } from './db.js';
 import { runMiddleware } from './middleware.js';
 import './commands.js'; // ← side-effect import: registra TODOS los comandos
+import './commands_extra.js'; // ← comandos migrados desde el bot de referencia
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 

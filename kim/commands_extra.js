@@ -1,0 +1,899 @@
+// kim/commands_extra.js — Comandos MIGRADOS desde el bot de referencia.
+//
+// Todos estos comandos provienen de KimdanBot-MD1 (Baileys legacy, CommonJS)
+// y fueron REESCRITOS para la arquitectura del proyecto principal:
+//   • CommonJS  → ESM
+//   • switch en kim.js  → registry.command()
+//   • Baileys legacy    → Baileys v7 (LID-aware)
+//   • APIs muertas/de pago (lolhuman, akuari, simsimi, brainshop, zahwazein)
+//     → reemplazadas por servicios keyless funcionales (pollinations,
+//       duckduckgo, lyrics.ovh, github, catbox) o por ffmpeg local.
+//   • MongoDB (libros) → base de datos JSON local (db.data.others.books)
+//
+// Se registran en el MISMO registry que commands.js, así que el handler
+// los despacha sin cambios y aparecen en el menú por categoría.
+
+import { spawn } from 'child_process';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
+import axios from 'axios';
+
+import { command } from './registry.js';
+import { getBuffer, fetchJson, isUrl, getRandom, sleep } from './helpers.js';
+import { getUser, getChat, db } from './db.js';
+
+// ─── Helpers de permisos (equivalentes a commands.js) ──────────────────
+const needGroup = (m) => {
+    if (!m.isGroup) { m.reply('⚠️ Este comando solo funciona en grupos.'); return false; }
+    return true;
+};
+const needGroupAdmin = (m) => {
+    if (!needGroup(m)) return false;
+    if (!m.isSenderAdmin && !m.isOwner) { m.reply('⚠️ Solo administradores.'); return false; }
+    return true;
+};
+const needBotAdmin = (m) => {
+    if (!m.isBotAdmin) { m.reply('⚠️ Necesito ser admin del grupo.'); return false; }
+    return true;
+};
+const needOwner = (m) => {
+    if (!m.isOwner) { m.reply('⚠️ Solo el propietario del bot.'); return false; }
+    return true;
+};
+const resolveTarget = (m, text) => {
+    if (m.mentionedJid?.[0]) return m.mentionedJid[0];
+    if (m.quoted?.sender) return m.quoted.sender;
+    if (text) {
+        const num = String(text).replace(/[^0-9]/g, '');
+        if (num.length >= 8) return num + '@s.whatsapp.net';
+    }
+    return null;
+};
+const pickRandom = (l) => l[Math.floor(Math.random() * l.length)];
+
+// ─── ffmpeg helper (efectos de audio) ──────────────────────────────────
+async function runFfmpeg(inputBuf, args, outExt = 'mp3') {
+    const tmpIn = path.join(os.tmpdir(), `kimfx_${Date.now()}_${getRandom()}`);
+    const tmpOut = `${tmpIn}.${outExt}`;
+    await fs.promises.writeFile(tmpIn, inputBuf);
+    return new Promise((resolve, reject) => {
+        const ff = spawn('ffmpeg', ['-y', '-i', tmpIn, ...args, tmpOut]);
+        ff.on('error', (e) => reject(/ENOENT/.test(String(e?.message)) ? new Error('Falta "ffmpeg" en el sistema.') : e));
+        ff.on('close', async (code) => {
+            try {
+                if (code !== 0) return reject(new Error('ffmpeg falló (código ' + code + ').'));
+                resolve(await fs.promises.readFile(tmpOut));
+            } catch (e) { reject(e); }
+            finally {
+                fs.promises.unlink(tmpIn).catch(() => {});
+                fs.promises.unlink(tmpOut).catch(() => {});
+            }
+        });
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// INFO / OWNER
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'imagen', category: 'info', description: 'Envía la foto del chat/grupo' },
+async (conn, m) => {
+    try {
+        const url = await conn.profilePictureUrl(m.chat, 'image');
+        const buf = await getBuffer(url);
+        await conn.sendMessage(m.chat, { image: buf, caption: '🖼️ Foto del chat.' }, { quoted: m });
+    } catch { await m.reply('❌ Este chat no tiene foto o es privada.'); }
+});
+
+command({ name: 'colaborador1', aliases: ['colab1'], category: 'info', description: 'Datos de un colaborador' },
+async (conn, m) => {
+    const c = global.owner?.find(o => Array.isArray(o) && o[1]) || ['', 'Equipo'];
+    await m.reply(`🌸 *Colaborador*\n\n• Nombre: ${c[1] || 'Equipo KimdanBot'}\n• Rol: Colaborador oficial`);
+});
+
+command({ name: 'getcase', category: 'owner', hidden: true, description: 'Muestra el código de un comando' },
+async (conn, m, args) => {
+    if (!needOwner(m)) return;
+    if (!args[0]) return m.reply('🚩 Indica el nombre del case. Ej: .getcase ping');
+    try {
+        const src = fs.readFileSync(new URL('./commands.js', import.meta.url), 'utf-8');
+        const marker = `case '${args[0]}'`;
+        if (!src.includes(marker)) return m.reply('🚩 Case no encontrado.');
+        const body = 'case ' + `'${args[0]}'` + src.split(marker)[1].split('\n            case ')[0];
+        await m.reply(body.slice(0, 3500));
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'update', aliases: ['actualizar'], category: 'owner', description: 'git pull para actualizar' },
+async (conn, m, args, text) => {
+    if (!needOwner(m)) return;
+    try {
+        const { execSync } = await import('child_process');
+        let out = execSync('git pull' + (text ? ' ' + text : ''), { encoding: 'utf-8', timeout: 60000 }).toString();
+        if (/Already up to date/i.test(out)) out = '✅ Nada por actualizar.';
+        else if (/Updating/i.test(out)) out = '✅ Actualizado:\n\n' + out;
+        await m.reply(out.slice(0, 3500));
+    } catch (e) { await m.reply('❌ git pull falló:\n' + String(e?.message || e).slice(0, 1500)); }
+});
+
+command({ name: 'listagrupos', aliases: ['groupkim', 'grouplist', 'listagru'], category: 'owner', description: 'Lista los grupos del bot' },
+async (conn, m) => {
+    if (!needOwner(m)) return;
+    try {
+        const all = await conn.groupFetchAllParticipating();
+        const groups = Object.values(all || {});
+        if (!groups.length) return m.reply('No estoy en ningún grupo.');
+        const list = groups.map((g, i) => `${i + 1}. *${g.subject}* (${g.participants?.length || 0} miembros)\n   ${g.id}`).join('\n\n');
+        await m.reply(`🌸 *Grupos (${groups.length}):*\n\n${list}`.slice(0, 3800));
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'autoadmin', aliases: ['tenerpoder'], category: 'owner', description: 'El owner se da admin a sí mismo' },
+async (conn, m) => {
+    if (!needGroup(m) || !needOwner(m) || !needBotAdmin(m)) return;
+    try {
+        await conn.groupParticipantsUpdate(m.chat, [m.sender], 'promote');
+        await m.reply('😎 Listo, ahora eres admin.');
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'join', aliases: ['unete'], category: 'owner', description: 'El bot se une a un grupo por link' },
+async (conn, m, args, text) => {
+    if (!needOwner(m)) return;
+    const link = (text || '').match(/chat\.whatsapp\.com\/([0-9A-Za-z]+)/);
+    if (!link) return m.reply('Uso: .join <link de invitación>');
+    try {
+        await conn.groupAcceptInvite(link[1]);
+        await m.reply('✅ Me uní al grupo.');
+    } catch (e) { await m.reply('❌ No pude unirme: ' + (e?.message || e)); }
+});
+
+command({ name: 'leave', aliases: ['salte'], category: 'owner', description: 'El bot sale del grupo' },
+async (conn, m) => {
+    if (!needGroup(m) || !needOwner(m)) return;
+    await m.reply('👋 Adiós, fue un gusto. Hasta pronto.');
+    try { await conn.groupLeave(m.chat); } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// GRUPO (herramientas)
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'editinfo', aliases: ['editarinfo'], category: 'group', description: 'Bloquea/desbloquea edición de info del grupo' },
+async (conn, m, args) => {
+    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+    const a = (args[0] || '').toLowerCase();
+    if (a !== 'open' && a !== 'close') return m.reply('Uso: .editinfo open | close');
+    try {
+        await conn.groupSettingUpdate(m.chat, a === 'open' ? 'unlocked' : 'locked');
+        await m.reply(a === 'open' ? '✅ Todos pueden editar la info.' : '🔒 Solo admins editan la info.');
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'totag', category: 'group', description: 'Reenvía el mensaje citado etiquetando a todos' },
+async (conn, m) => {
+    if (!needGroup(m)) return;
+    if (!m.quoted) return m.reply('Responde a un mensaje con .totag');
+    const jids = (m.participants || []).map(p => p.id);
+    try {
+        await conn.sendMessage(m.chat, { forward: m.quoted, mentions: jids });
+    } catch {
+        // Fallback: reenvía el texto
+        await conn.sendMessage(m.chat, { text: m.quoted.text || '📢', mentions: jids });
+    }
+});
+
+command({ name: 'aprobar', aliases: ['prueba'], category: 'group', description: 'Aprueba solicitudes de ingreso pendientes' },
+async (conn, m) => {
+    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+    try {
+        const reqs = await conn.groupRequestParticipantsList(m.chat);
+        if (!reqs?.length) return m.reply('No hay solicitudes pendientes.');
+        const jids = reqs.map(r => r.jid);
+        await conn.groupRequestParticipantsUpdate(m.chat, jids, 'approve');
+        await m.reply(`✅ Aprobadas ${jids.length} solicitud(es).`);
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'rechazar', aliases: ['prueba2'], category: 'group', description: 'Rechaza solicitudes de ingreso pendientes' },
+async (conn, m) => {
+    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+    try {
+        const reqs = await conn.groupRequestParticipantsList(m.chat);
+        if (!reqs?.length) return m.reply('No hay solicitudes pendientes.');
+        const jids = reqs.map(r => r.jid);
+        await conn.groupRequestParticipantsUpdate(m.chat, jids, 'reject');
+        await m.reply(`🚫 Rechazadas ${jids.length} solicitud(es).`);
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'allmessage', category: 'config', description: 'Activa/desactiva bienvenida+despedida+avisos' },
+async (conn, m, args) => {
+    if (!needGroupAdmin(m)) return;
+    const a = (args[0] || '').toLowerCase();
+    if (a !== 'on' && a !== 'off') return m.reply('Uso: .allmessage on | off');
+    const c = getChat(m.chat);
+    const v = a === 'on';
+    c.welcome = v; c.bye = v; c.detect = v;
+    db.markDirty();
+    await m.reply(v ? '✅ Bienvenida, despedida y avisos ACTIVADOS.' : '🍃 Bienvenida, despedida y avisos DESACTIVADOS.');
+});
+
+command({ name: 'autolevel', aliases: ['lvl'], category: 'config', description: 'Auto-subida de nivel del grupo' },
+async (conn, m, args) => {
+    if (!needGroupAdmin(m)) return;
+    const a = (args[0] || '').toLowerCase();
+    if (a !== 'on' && a !== 'off') return m.reply('Uso: .autolevel on | off');
+    const c = getChat(m.chat);
+    c.autolevelup = a === 'on';
+    db.markDirty();
+    await m.reply(c.autolevelup ? '✅ Auto-nivel activado.' : '🍃 Auto-nivel desactivado.');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// RPG (economía extendida) — adaptado a los campos de db.js del principal
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'buy', aliases: ['buyall'], category: 'rpg', description: 'Compra diamantes con EXP (.buy <n> | .buyall)' },
+async (conn, m, args, text) => {
+    const u = getUser(m.sender);
+    let count;
+    if (m.command === 'buyall') count = Math.floor((u.exp || 0) / 450);
+    else count = parseInt(args[0]) || 1;
+    count = Math.max(1, count);
+    const cost = 450 * count;
+    if ((u.exp || 0) < cost) return m.reply(`🔶 No tienes EXP suficiente. Necesitas *${cost}* EXP para *${count}* 💎. Consigue EXP con .work / .mine.`);
+    u.exp -= cost;
+    u.diamond = (u.diamond || 0) + count;
+    db.markDirty();
+    await m.reply(`╔═❖ *NOTA DE PAGO*\n║ Compraste: *${count}* 💎\n║ Gastaste: *${cost}* EXP\n╚═══════════`);
+});
+
+command({ name: 'cofre', category: 'rpg', description: 'Abre un cofre diario (nivel 9+)' },
+async (conn, m) => {
+    const u = getUser(m.sender);
+    if ((u.level || 0) < 9) return m.reply('❇️ Necesitas nivel 9 para usar el cofre. Mira tu nivel con .nivel');
+    const last = u.lastcofre || 0;
+    if (Date.now() - last < 86400000) {
+        const left = 86400000 - (Date.now() - last);
+        return m.reply(`🎁 Ya abriste tu cofre. Vuelve en ${Math.ceil(left / 3600000)}h.`);
+    }
+    const exp = Math.floor(Math.random() * 9000);
+    const dia = Math.floor(Math.random() * 60);
+    const money = Math.floor(Math.random() * 6500);
+    u.exp = (u.exp || 0) + exp;
+    u.diamond = (u.diamond || 0) + dia;
+    u.money = (u.money || 0) + money;
+    u.lastcofre = Date.now();
+    db.markDirty();
+    await m.reply(`╔══🎉══⬣\n║🛒 *OBTIENES UN COFRE*\n║⚡ ${exp} EXP\n║💎 ${dia} Diamantes\n║🪙 ${money} Coins\n╚═════════⬣`);
+});
+
+command({ name: 'nivel', aliases: ['levelup'], category: 'rpg', description: 'Sube de nivel con tu EXP' },
+async (conn, m) => {
+    const u = getUser(m.sender);
+    const mult = global.multiplier || 90;
+    const need = (lvl) => Math.round(mult * (lvl + 1) * (Math.pow(lvl + 1, 1.4)));
+    const before = u.level || 0;
+    let lvl = before;
+    while ((u.exp || 0) >= need(lvl)) lvl++;
+    if (lvl === before) {
+        return m.reply(`╭╌「 *TUS ESTADÍSTICAS* 」\n├ NOMBRE: ${m.pushName || '?'}\n├ EXP: ${u.exp || 0}\n├ NIVEL: ${u.level || 0}\n├ RANGO: ${u.role || 'Novato'}\n╰╌ Te faltan *${need(before) - (u.exp || 0)}* EXP para subir.`);
+    }
+    u.level = lvl;
+    db.markDirty();
+    await m.reply(`╭╌「 *LEVEL UP 🎊* 」\n├ 🥳 ${m.pushName || ''} ¡Felicidades!\n├ NIVEL ANTERIOR: ${before}\n├ NIVEL ACTUAL: ${u.level}\n├ RANGO: ${u.role || 'Novato'}\n╰╌ Interactúa más para subir.`);
+});
+
+command({ name: 'myns', category: 'rpg', hidden: true, description: 'Tu número de serie de registro' },
+async (conn, m) => {
+    const { createHash } = await import('crypto');
+    const sn = createHash('md5').update(m.sender).digest('hex');
+    await m.reply(`🔑 Tu número de serie:\n${sn}`);
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// JUEGOS / DIVERSIÓN
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'simi', aliases: ['alexa', 'siri'], category: 'fun', description: 'Habla con la IA' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('💬 Escríbeme algo. Ej: .simi hola');
+    try {
+        await conn.sendPresenceUpdate('composing', m.chat).catch(() => {});
+        const res = await axios.get(`https://text.pollinations.ai/${encodeURIComponent(text)}`, { timeout: 40000 });
+        const out = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+        await m.reply((out || '🤖 ...').slice(0, 3500));
+    } catch (e) { await m.reply('🤖 La IA no respondió, intenta de nuevo.'); }
+});
+
+command({ name: 'follar', aliases: ['violar'], category: 'fun', description: 'Broma para adultos (texto)' },
+async (conn, m, args, text) => {
+    const tgt = resolveTarget(m, text);
+    if (!tgt) return m.reply('Etiqueta o menciona a alguien.');
+    await conn.sendMessage(m.chat, {
+        text: `🥵 *@${m.sender.split('@')[0]}* le dio cariño intenso a *@${tgt.split('@')[0]}* (?) 😳`,
+        mentions: [m.sender, tgt],
+    }, { quoted: m });
+});
+
+command({ name: 'pregunta', aliases: ['preg'], category: 'game', description: 'Hazme una pregunta de sí/no' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('🤔 ¿Y la pregunta? Ej: .pregunta ¿lloverá mañana?');
+    const r = pickRandom(['no', 'sí', 'no sé', 'puede ser', 'no creo', 'obvio', 'jamás', 'tal vez']);
+    await m.reply(`🔸 *Pregunta:* ${text}\n🔸 *Respuesta:* ${r}`);
+});
+
+command({ name: 'doxear', aliases: ['doxxeo'], category: 'fun', description: 'Doxxeo falso (broma)' },
+async (conn, m, args, text) => {
+    const tgt = resolveTarget(m, text);
+    const name = tgt ? `@${tgt.split('@')[0]}` : (text || m.pushName || 'usuario');
+    const { key } = await conn.sendMessage(m.chat, { text: '😱 *¡Empezando doxxeo!*', mentions: tgt ? [tgt] : [] }, { quoted: m });
+    for (const p of ['10%', '47%', '88%', '100%']) {
+        await sleep(500);
+        await conn.sendMessage(m.chat, { text: `🔎 ${p}`, edit: key }).catch(() => {});
+    }
+    const fake = `🤣 *Persona "hackeada" con éxito*\n\n*Objetivo:* ${name}\n*IP:* 92.28.211.234\n*ISP:* Ucom Universal\n*DNS:* 8.8.8.8\n*MAC:* 5A:78:3E:7E:00\n*Gateway:* 192.168.0.1\n*Puertos:* 80, 443, 8080\n\n_(Es 100% una broma 😜)_`;
+    await conn.sendMessage(m.chat, { text: fake, mentions: tgt ? [tgt] : [], edit: key }).catch(() => {});
+});
+
+command({ name: 'personalidad', category: 'fun', description: 'Analiza la personalidad (broma)' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Ingresa un nombre. Ej: .personalidad Ana');
+    const pct = () => pickRandom(['6%', '20%', '35%', '49%', '66%', '78%', '92%', '99%', '0.4%']);
+    await m.reply(`┏━ *PERSONALIDAD* ━┓
+┃ Nombre: ${text}
+┃ Buena moral: ${pct()}
+┃ Mala moral: ${pct()}
+┃ Tipo: ${pickRandom(['De buen corazón', 'Arrogante', 'Tacaño', 'Generoso', 'Humilde', 'Tímido', 'Entrometido'])}
+┃ Inteligencia: ${pct()}
+┃ Coraje: ${pct()}
+┃ Fama: ${pct()}
+┗━━━━━━━━━━━`);
+});
+
+command({ name: 'topgays', aliases: ['topotakus'], category: 'fun', description: 'Top 10 del grupo (broma)' },
+async (conn, m) => {
+    if (!needGroup(m)) return;
+    const members = (m.participants || []).map(p => p.id);
+    if (members.length < 3) return m.reply('No hay suficientes miembros.');
+    const pick = () => members[Math.floor(Math.random() * members.length)];
+    const sel = Array.from({ length: 10 }, pick);
+    const title = m.command === 'topotakus' ? '🌸 TOP 10 OTAKUS DEL GRUPO 🌸' : '🌈 TOP 10 DEL GRUPO 🌈';
+    const list = sel.map((j, i) => `*${i + 1}.* @${j.split('@')[0]}`).join('\n');
+    await conn.sendMessage(m.chat, { text: `${title}\n\n${list}`, mentions: sel }, { quoted: m });
+});
+
+command({ name: 'alegay', category: 'fun', description: '% de alegría' },
+async (conn, m, args, text) => {
+    const tgt = m.mentionedJid?.[0] ? `@${m.mentionedJid[0].split('@')[0]}` : (text || m.pushName || 'tú');
+    await conn.sendMessage(m.chat, { text: `🌈 ${tgt} tiene ${Math.floor(Math.random() * 101)}% de alegría 🎉`, mentions: m.mentionedJid || [] }, { quoted: m });
+});
+
+command({ name: 'diego', category: 'fun', hidden: true, description: 'ASCII art' },
+async (conn, m) => {
+    await m.reply('⣿⣿⣿⠟⢹⣶⣶⣝⣿⣿⣿\n⣿⣿⡟⢰⡌⠿⢿⣿⡾⢹⣿\n⣿⣿⣿⢸⣿⣤⣒⣶⣾⣳⡻\n⣿⣿⣿⠸⣿⣿⣿⣿⢇⠃⣟\n⣿⣿⣿⣇⢻⣿⣿⣯⣕⠧⢿');
+});
+command({ name: 'mario', category: 'fun', hidden: true, description: 'ASCII art' },
+async (conn, m) => {
+    await m.reply('🟥🟥🟥⬜⬜🟥🟥🟥\n🟥🟥🟥⬜⬜🟥🟥🟥\n🟥🟥🟥🟥🟥🟥🟥🟥\n🏻⬜🟦🏻🏻🟦⬜🏻\n🟫🏻🏻🏻🏻🏻🏻🟫\n🏻⬛⬛⬛⬛⬛⬛🏻');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// IA (texto/imagen) — vía Pollinations (keyless, reemplaza lolhuman/openai)
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'ia', aliases: ['chatgpt'], category: 'tools', description: 'Pregúntale a la IA (texto)' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .ia <pregunta>');
+    try {
+        const res = await axios.get(`https://text.pollinations.ai/${encodeURIComponent(text)}`, { timeout: 45000 });
+        const out = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
+        await m.reply((out || '🤖 ...').slice(0, 3800));
+    } catch (e) { await m.reply('❌ La IA no respondió: ' + (e?.message || e)); }
+});
+
+command({ name: 'aimg', aliases: ['imagine', 'dalle', 'dall-e', 'ia2'], category: 'tools', description: 'Genera una imagen con IA' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .aimg <descripción>');
+    try {
+        await m.reply('🎨 Generando imagen...');
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(text)}?width=1024&height=1024&nologo=true`;
+        const buf = await getBuffer(url, { timeout: 60000 });
+        if (!buf) throw new Error('Sin respuesta del generador.');
+        await conn.sendMessage(m.chat, { image: buf, caption: `🎨 ${text}` }, { quoted: m });
+    } catch (e) { await m.reply('❌ No se pudo generar la imagen: ' + (e?.message || e)); }
+});
+
+command({ name: 'wallpaper', category: 'search', description: 'Genera un wallpaper con IA' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .wallpaper <tema>');
+    try {
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(text + ' wallpaper 4k high quality')}?width=1280&height=720&nologo=true`;
+        const buf = await getBuffer(url, { timeout: 60000 });
+        if (!buf) throw new Error('Sin respuesta.');
+        await conn.sendMessage(m.chat, { image: buf, caption: `🖼️ Wallpaper: ${text}` }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// Efectos de "logo" — la API lolhuman/textprome original está muerta;
+// se adaptan a generación de imagen con IA estilizada (keyless).
+command({ name: 'blackpink', aliases: ['bloodfrosted', 'neon', 'minion', 'cloud', 'avenger', 'space'], category: 'fun', description: 'Logo con texto estilizado (IA)' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply(`Uso: .${m.command} <texto>`);
+    const styles = {
+        blackpink: 'blackpink kpop neon pink logo text', bloodfrosted: 'frozen blood ice horror logo text',
+        neon: 'glowing neon sign logo text', minion: 'cute minion cartoon logo text',
+        cloud: 'fluffy clouds sky 3d logo text', avenger: 'marvel avengers metal logo text',
+        space: 'galaxy space stars 3d logo text',
+    };
+    try {
+        const prompt = `${styles[m.command] || 'stylized logo text'} that says "${text}", centered, high detail`;
+        const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=512&nologo=true`;
+        const buf = await getBuffer(url, { timeout: 60000 });
+        if (!buf) throw new Error('Sin respuesta.');
+        await conn.sendMessage(m.chat, { image: buf, caption: `✨ Estilo: ${m.command}` }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// BÚSQUEDAS / DESCARGAS
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'google', category: 'search', description: 'Busca en la web' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .google <consulta>');
+    try {
+        const res = await axios.get('https://api.duckduckgo.com/', {
+            params: { q: text, format: 'json', no_html: 1, skip_disambig: 1 }, timeout: 15000,
+        });
+        const d = res.data;
+        let out = `🔎 *Resultados para:* ${text}\n\n`;
+        if (d.AbstractText) out += `${d.AbstractText}\n${d.AbstractURL || ''}\n\n`;
+        const topics = (d.RelatedTopics || []).filter(t => t.Text).slice(0, 6);
+        for (const t of topics) out += `• ${t.Text}\n${t.FirstURL || ''}\n\n`;
+        if (out.trim() === `🔎 *Resultados para:* ${text}`) out += '_Sin resultados directos. Prueba .yts o .wiki._';
+        await m.reply(out.slice(0, 3800));
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'gitclone', category: 'download', description: 'Descarga un repo de GitHub (.zip)' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .gitclone <url de GitHub>');
+    const mt = text.match(/github\.com\/([^/]+)\/([^/\s]+)/);
+    if (!mt) return m.reply('URL de GitHub inválida.');
+    const [, user, repoRaw] = mt;
+    const repo = repoRaw.replace(/\.git$/, '');
+    try {
+        const url = `https://api.github.com/repos/${user}/${repo}/zipball`;
+        const buf = await getBuffer(url, { headers: { 'User-Agent': 'KimdanBot' }, timeout: 60000 });
+        if (!buf) throw new Error('No se pudo descargar.');
+        await conn.sendMessage(m.chat, {
+            document: buf, fileName: `${repo}.zip`, mimetype: 'application/zip',
+        }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'mediafire', category: 'download', description: 'Descarga un archivo de MediaFire' },
+async (conn, m, args, text) => {
+    if (!text || !/mediafire\.com/.test(text)) return m.reply('Uso: .mediafire <link de MediaFire>');
+    try {
+        const page = await axios.get(text.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
+        const html = page.data;
+        const dl = (html.match(/href="((https?:\/\/download[^"]+))"/) || [])[1]
+            || (html.match(/"(https?:\/\/download\d+\.mediafire\.com[^"]+)"/) || [])[1];
+        if (!dl) throw new Error('No encontré el enlace directo.');
+        const name = decodeURIComponent((dl.split('/').pop() || 'archivo').split('?')[0]);
+        await m.reply(`📥 *${name}*\nDescargando...`);
+        const buf = await getBuffer(dl, { timeout: 120000 });
+        await conn.sendMessage(m.chat, { document: buf, fileName: name, mimetype: 'application/octet-stream' }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'lyrics', aliases: ['letra'], category: 'search', description: 'Letra de una canción (artista - título)' },
+async (conn, m, args, text) => {
+    if (!text || !text.includes('-')) return m.reply('Uso: .lyrics <artista> - <título>\nEj: .lyrics Coldplay - Yellow');
+    const [artist, title] = text.split('-').map(s => s.trim());
+    try {
+        const res = await axios.get(`https://api.lyrics.ovh/v1/${encodeURIComponent(artist)}/${encodeURIComponent(title)}`, { timeout: 15000 });
+        const lyr = res.data?.lyrics;
+        if (!lyr) throw new Error('No encontré la letra.');
+        await m.reply(`🎵 *${artist} — ${title}*\n\n${lyr}`.slice(0, 3800));
+    } catch (e) { await m.reply('❌ No encontré la letra (usa el formato "artista - título").'); }
+});
+
+// Descargas de YouTube como DOCUMENTO. La descarga directa de YouTube
+// requiere scrapers externos cambiantes; usamos yt-search + un endpoint
+// keyless y degradamos a enlace si la descarga falla (sin romper).
+async function ytDocAudio(conn, m, text) {
+    if (!text) return m.reply('Uso: .' + m.command + ' <canción o link>');
+    let yts;
+    try { ({ default: yts } = await import('yt-search')); }
+    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+    const r = await yts(text);
+    const v = r.videos?.[0];
+    if (!v) return m.reply('Sin resultados.');
+    try {
+        const api = `https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(v.url)}`;
+        const res = await axios.get(api, { timeout: 45000 });
+        const dl = res.data?.result?.download?.url || res.data?.result?.url;
+        if (!dl) throw new Error('no url');
+        const buf = await getBuffer(dl, { timeout: 120000 });
+        await conn.sendMessage(m.chat, { document: buf, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
+    } catch {
+        await m.reply(`🎵 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+    }
+}
+async function ytDocVideo(conn, m, text) {
+    if (!text) return m.reply('Uso: .' + m.command + ' <video o link>');
+    let yts;
+    try { ({ default: yts } = await import('yt-search')); }
+    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+    const r = await yts(text);
+    const v = r.videos?.[0];
+    if (!v) return m.reply('Sin resultados.');
+    try {
+        const api = `https://api.vreden.my.id/api/ytmp4?url=${encodeURIComponent(v.url)}`;
+        const res = await axios.get(api, { timeout: 60000 });
+        const dl = res.data?.result?.download?.url || res.data?.result?.url;
+        if (!dl) throw new Error('no url');
+        const buf = await getBuffer(dl, { timeout: 180000 });
+        await conn.sendMessage(m.chat, { document: buf, mimetype: 'video/mp4', fileName: `${v.title}.mp4` }, { quoted: m });
+    } catch {
+        await m.reply(`🎬 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+    }
+}
+command({ name: 'play3', aliases: ['playdoc', 'playaudiodoc', 'ytmp3doc'], category: 'download', description: 'YouTube audio como documento' },
+async (conn, m, args, text) => ytDocAudio(conn, m, text));
+command({ name: 'play4', aliases: ['playdoc2', 'playvideodoc', 'ytmp4doc'], category: 'download', description: 'YouTube video como documento' },
+async (conn, m, args, text) => ytDocVideo(conn, m, text));
+
+// Redes sociales: las APIs originales (lolhuman) están muertas; se intenta
+// un endpoint keyless y se degrada con un mensaje claro (sin romper).
+command({ name: 'facebook', aliases: ['fb'], category: 'download', description: 'Descarga video de Facebook' },
+async (conn, m, args, text) => {
+    if (!text || !/facebook\.com|fb\.watch/.test(text)) return m.reply('Uso: .facebook <link>');
+    try {
+        const res = await axios.get(`https://api.vreden.my.id/api/fbdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
+        const dl = res.data?.result?.[0]?.url || res.data?.result?.hd || res.data?.result?.sd;
+        if (!dl) throw new Error('sin url');
+        const buf = await getBuffer(dl, { timeout: 120000 });
+        await conn.sendMessage(m.chat, { video: buf, mimetype: 'video/mp4', caption: '📥 Facebook' }, { quoted: m });
+    } catch { await m.reply('❌ No se pudo descargar el video de Facebook (servicio externo no disponible).'); }
+});
+
+command({ name: 'instagram', aliases: ['ig'], category: 'download', description: 'Descarga de Instagram' },
+async (conn, m, args, text) => {
+    if (!text || !/instagram\.com/.test(text)) return m.reply('Uso: .instagram <link>');
+    try {
+        const res = await axios.get(`https://api.vreden.my.id/api/igdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
+        const items = res.data?.result || [];
+        if (!items.length) throw new Error('sin resultados');
+        for (const it of items.slice(0, 5)) {
+            const url = it.url || it;
+            const buf = await getBuffer(url, { timeout: 120000 });
+            if (!buf) continue;
+            const isVid = /\.mp4|video/i.test(url) || it.type === 'video';
+            await conn.sendMessage(m.chat, isVid ? { video: buf, caption: '📥 Instagram' } : { image: buf, caption: '📥 Instagram' }, { quoted: m });
+        }
+    } catch { await m.reply('❌ No se pudo descargar de Instagram (servicio externo no disponible).'); }
+});
+
+command({ name: 'igstalk', aliases: ['iig'], category: 'search', description: 'Información de un perfil de Instagram' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .igstalk <usuario>');
+    try {
+        const res = await axios.get(`https://api.vreden.my.id/api/igstalk?username=${encodeURIComponent(text.replace('@', '').trim())}`, { timeout: 25000 });
+        const a = res.data?.result;
+        if (!a) throw new Error('sin datos');
+        await m.reply(`📷 *Instagram*\n\n• Usuario: ${a.username || text}\n• Nombre: ${a.fullName || a.fullname || '-'}\n• Posts: ${a.posts ?? '-'}\n• Seguidores: ${a.followers ?? '-'}\n• Siguiendo: ${a.following ?? '-'}\n• Bio: ${a.biography || a.bio || '-'}`);
+    } catch { await m.reply('❌ No se pudo consultar el perfil (servicio externo no disponible).'); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// MEDIA / STICKERS / CONVERTIDORES
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'wm', aliases: ['take'], category: 'sticker', description: 'Re-empaqueta un sticker' },
+async (conn, m) => {
+    const target = m.quoted || m;
+    const mime = target.msg?.mimetype || '';
+    if (!/webp|image|video/.test(mime)) return m.reply('Responde a un sticker/imagen/video con .wm');
+    try {
+        const buf = await target.download();
+        if (/video/.test(mime)) await conn.sendVideoAsSticker(m.chat, buf, m, { packname: global.packname, author: global.author });
+        else await conn.sendImageAsSticker(m.chat, buf, m, { packname: global.packname, author: global.author });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+command({ name: 'tourl', category: 'tools', description: 'Sube una imagen/video y devuelve su URL' },
+async (conn, m) => {
+    const target = m.quoted || m;
+    const mime = target.msg?.mimetype || '';
+    if (!/image|video|audio/.test(mime)) return m.reply('Responde a una imagen/video/audio con .tourl');
+    try {
+        const buf = await target.download();
+        const FormData = (await import('form-data')).default;
+        const form = new FormData();
+        form.append('reqtype', 'fileupload');
+        const ext = (mime.split('/')[1] || 'bin').split(';')[0];
+        form.append('fileToUpload', buf, `file.${ext}`);
+        const res = await axios.post('https://catbox.moe/user/api.php', form, {
+            headers: form.getHeaders(), timeout: 60000,
+        });
+        await m.reply(`🔗 ${res.data}`);
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// Efectos de audio (ffmpeg) — bass/blown/deep/earrape/fast/fat/nightcore/...
+const AUDIO_FX = {
+    bass: ['-af', 'equalizer=f=54:width_type=o:width=2:g=20'],
+    blown: ['-af', 'acrusher=.1:1:64:0:log'],
+    deep: ['-af', 'atempo=4/4,asetrate=44500*2/3'],
+    earrape: ['-af', 'volume=12'],
+    fast: ['-filter:a', 'atempo=1.63,asetrate=44100'],
+    fat: ['-filter:a', 'atempo=1.6,asetrate=22100'],
+    nightcore: ['-filter:a', 'atempo=1.06,asetrate=44100*1.25'],
+    reverse: ['-filter_complex', 'areverse'],
+    robot: ['-filter_complex', "afftfilt=real='hypot(re,im)*sin(0)':imag='hypot(re,im)*cos(0)':win_size=512:overlap=0.75"],
+    slow: ['-filter:a', 'atempo=0.7,asetrate=44100'],
+    smooth: ['-filter:a', 'atempo=0.9'],
+    squirrel: ['-filter:a', 'atempo=0.5,asetrate=65100'],
+};
+command({ name: 'bass', aliases: ['blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore', 'reverse', 'robot', 'slow', 'smooth', 'squirrel'], category: 'media', description: 'Aplica efectos a un audio' },
+async (conn, m) => {
+    const target = m.quoted || m;
+    const mime = target.msg?.mimetype || '';
+    if (!/audio|video/.test(mime)) return m.reply(`Responde a un audio con .${m.command}`);
+    const fx = AUDIO_FX[m.command];
+    if (!fx) return m.reply('Efecto no reconocido.');
+    try {
+        await conn.sendPresenceUpdate('recording', m.chat).catch(() => {});
+        const inBuf = await target.download();
+        const out = await runFfmpeg(inBuf, fx, 'mp3');
+        await conn.sendMessage(m.chat, { audio: out, mimetype: 'audio/mpeg', fileName: `${m.command}.mp3` }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LIBROS — migrado de MongoDB a la DB JSON local (db.data.others.books)
+// ═══════════════════════════════════════════════════════════════════════
+
+function getBooks() {
+    if (!db.data.others) db.data.others = {};
+    if (!Array.isArray(db.data.others.books)) db.data.others.books = [];
+    return db.data.others.books;
+}
+function findBook(books, q) {
+    const ql = String(q).toLowerCase();
+    return books.find(b => b.title?.toLowerCase().includes(ql) || String(b.id) === String(q));
+}
+
+command({ name: 'libros', aliases: ['botaolista', 'plist'], category: 'tools', description: 'Lista la biblioteca' },
+async (conn, m) => {
+    const books = getBooks();
+    if (!books.length) return m.reply('📚 No hay libros aún. Agrega con: .agglibro <título> | <enlace>');
+    const byGenre = {};
+    for (const b of books) (byGenre[b.genre || 'Sin género'] ||= []).push(b);
+    let out = '📚 *BIBLIOTECA*\n';
+    for (const [g, list] of Object.entries(byGenre)) {
+        out += `\n*${g}*\n`;
+        for (const b of list) out += `• [${b.id}] ${b.title}${b.author ? ' — ' + b.author : ''}\n`;
+    }
+    await m.reply(out.slice(0, 3800));
+});
+
+command({ name: 'libro', category: 'tools', description: 'Busca un libro por título' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .libro <título>');
+    const b = findBook(getBooks(), text);
+    if (!b) return m.reply('📕 No encontré ese libro.');
+    await m.reply(`📖 *${b.title}*\n• Autor: ${b.author || '-'}\n• Género: ${b.genre || '-'}\n• Enlace: ${b.link || '-'}`);
+});
+
+command({ name: 'agglibro', category: 'tools', description: 'Agrega un libro (.agglibro título | enlace)' },
+async (conn, m, args, text) => {
+    if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
+    if (!text || !text.includes('|')) return m.reply('Uso: .agglibro <título> | <enlace>');
+    const [title, link] = text.split('|').map(s => s.trim());
+    if (!title || !link) return m.reply('Faltan datos. Uso: .agglibro <título> | <enlace>');
+    const books = getBooks();
+    const id = (books.reduce((mx, b) => Math.max(mx, +b.id || 0), 0)) + 1;
+    books.push({ id, title, link, author: '', genre: '' });
+    db.markDirty();
+    await m.reply(`✅ Libro agregado con id *${id}*: ${title}`);
+});
+
+command({ name: 'dellibro', category: 'tools', description: 'Elimina un libro por id o título' },
+async (conn, m, args, text) => {
+    if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
+    if (!text) return m.reply('Uso: .dellibro <id o título>');
+    const books = getBooks();
+    const idx = books.findIndex(b => String(b.id) === String(text) || b.title?.toLowerCase() === text.toLowerCase());
+    if (idx === -1) return m.reply('No encontré ese libro.');
+    const [rm] = books.splice(idx, 1);
+    db.markDirty();
+    await m.reply(`🗑️ Eliminado: ${rm.title}`);
+});
+
+function makeBookUpdater(field, label) {
+    return async (conn, m, args, text) => {
+        if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
+        if (!text || !text.includes('|')) return m.reply(`Uso: .${m.command} <id o título> | <nuevo ${label}>`);
+        const [key, val] = text.split('|').map(s => s.trim());
+        const b = findBook(getBooks(), key);
+        if (!b) return m.reply('No encontré ese libro.');
+        b[field] = val;
+        db.markDirty();
+        await m.reply(`✅ ${label} actualizado para *${b.title}*: ${val}`);
+    };
+}
+command({ name: 'actitulo', aliases: ['actitle'], category: 'tools', description: 'Cambia el título de un libro' }, makeBookUpdater('title', 'título'));
+command({ name: 'acautor', aliases: ['acauthor'], category: 'tools', description: 'Cambia el autor de un libro' }, makeBookUpdater('author', 'autor'));
+command({ name: 'acgenero', aliases: ['acgenre'], category: 'tools', description: 'Cambia el género de un libro' }, makeBookUpdater('genre', 'género'));
+command({ name: 'acenlace', aliases: ['aclink'], category: 'tools', description: 'Cambia el enlace de un libro' }, makeBookUpdater('link', 'enlace'));
+
+// ═══════════════════════════════════════════════════════════════════════
+// JADIBOT (sub-bots)
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'serbot', aliases: ['qr', 'jadibot'], category: 'owner', description: 'Conecta un sub-bot (QR o --code)' },
+async (conn, m, args) => {
+    const useQR = !(args[0] === '--code' || args[0] === 'code' || m.command === 'jadibot');
+    const { startJadibot } = await import('./jadibot.js');
+    await startJadibot(conn, m, useQR).catch(e => m.reply('❌ ' + (e?.message || e)));
+});
+command({ name: 'sercode', category: 'owner', description: 'Conecta un sub-bot por código de 8 dígitos' },
+async (conn, m) => {
+    const { startJadibot } = await import('./jadibot.js');
+    await startJadibot(conn, m, false).catch(e => m.reply('❌ ' + (e?.message || e)));
+});
+command({ name: 'deljadibot', aliases: ['stop'], category: 'owner', description: 'Desconecta tu sub-bot' },
+async (conn, m) => {
+    const { stopJadibot } = await import('./jadibot.js');
+    await stopJadibot(conn, m).catch(e => m.reply('❌ ' + (e?.message || e)));
+});
+command({ name: 'bots', aliases: ['listbots'], category: 'info', description: 'Lista los sub-bots conectados' },
+async (conn, m) => {
+    const { listJadibots } = await import('./jadibot.js');
+    await m.reply(listJadibots());
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// LISTAS / VARIOS
+// ═══════════════════════════════════════════════════════════════════════
+
+command({ name: 'listonline', aliases: ['liston'], category: 'group', description: 'Lista miembros marcados como en línea' },
+async (conn, m) => {
+    if (!needGroup(m)) return;
+    const online = Object.entries(conn.chats?.[m.chat]?.presences || {})
+        .filter(([, p]) => p?.lastKnownPresence === 'available' || p?.lastKnownPresence === 'composing')
+        .map(([jid]) => jid);
+    if (!online.length) return m.reply('🟢 No tengo registro de miembros en línea ahora (el bot debe llevar un rato activo y suscrito a presencias).');
+    await conn.sendMessage(m.chat, {
+        text: `🟢 *En línea (${online.length}):*\n` + online.map(j => `• @${j.split('@')[0]}`).join('\n'),
+        mentions: online,
+    }, { quoted: m });
+});
+
+command({ name: 'testt', category: 'owner', hidden: true, description: 'Mensaje de prueba (debug)' },
+async (conn, m) => {
+    if (!needOwner(m)) return;
+    await m.reply('✅ test ok — bot activo.');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// COMANDOS ADICIONALES (antes marcados "imposibles") — ahora adaptados
+// ═══════════════════════════════════════════════════════════════════════
+
+// hd → mejora/upscale local con sharp (x2 + nitidez). Reemplaza la API
+// remini original (muerta) por un procesamiento real sin servicios externos.
+command({ name: 'hd', category: 'tools', description: 'Mejora la calidad de una imagen (x2)' },
+async (conn, m) => {
+    const target = m.quoted || m;
+    const mime = target.msg?.mimetype || '';
+    if (!/image/.test(mime)) return m.reply('Responde a una imagen con .hd');
+    try {
+        const sharp = (await import('sharp')).default;
+        const buf = await target.download();
+        const meta = await sharp(buf).metadata();
+        const w = Math.min((meta.width || 512) * 2, 2048);
+        const out = await sharp(buf)
+            .resize({ width: w, withoutEnlargement: false, kernel: 'lanczos3' })
+            .sharpen({ sigma: 1.2 })
+            .png({ quality: 95 })
+            .toBuffer();
+        await conn.sendMessage(m.chat, { image: out, caption: `✨ Mejorada a ${w}px de ancho.` }, { quoted: m });
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// spotify / music → resuelve el título y entrega el audio (vía YouTube),
+// adaptación estándar usada por la mayoría de bots; degrada a enlace.
+command({ name: 'spotify', aliases: ['music'], category: 'download', description: 'Descarga una canción por nombre' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .spotify <nombre de la canción>');
+    let yts;
+    try { ({ default: yts } = await import('yt-search')); }
+    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+    try {
+        const q = text.replace(/https?:\/\/open\.spotify\.com\/\S+/g, '').trim() || text;
+        const r = await yts(q);
+        const v = r.videos?.[0];
+        if (!v) return m.reply('Sin resultados.');
+        await m.reply(`🎵 *${v.title}*\nDescargando audio...`);
+        try {
+            const api = `https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(v.url)}`;
+            const res = await axios.get(api, { timeout: 45000 });
+            const dl = res.data?.result?.download?.url || res.data?.result?.url;
+            if (!dl) throw new Error('no url');
+            const buf = await getBuffer(dl, { timeout: 120000 });
+            await conn.sendMessage(m.chat, { audio: buf, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
+        } catch {
+            await m.reply(`⚠️ Descarga directa no disponible ahora. Enlace:\n${v.url}`);
+        }
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+});
+
+// pinterest → búsqueda de imágenes vía endpoint keyless con degradación
+// elegante (mismo patrón que facebook/instagram).
+command({ name: 'pinterest', category: 'search', description: 'Busca imágenes en Pinterest' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .pinterest <búsqueda>');
+    try {
+        const res = await axios.get(`https://api.vreden.my.id/api/pinterest?query=${encodeURIComponent(text)}`, { timeout: 25000 });
+        const list = res.data?.result || res.data?.data || [];
+        const urls = (Array.isArray(list) ? list : []).map(x => x?.images_url || x?.url || x).filter(u => typeof u === 'string');
+        if (!urls.length) throw new Error('sin resultados');
+        const pick = urls[Math.floor(Math.random() * urls.length)];
+        const buf = await getBuffer(pick, { timeout: 60000 });
+        await conn.sendMessage(m.chat, { image: buf, caption: `📌 Pinterest: ${text}` }, { quoted: m });
+    } catch { await m.reply('❌ No se pudo buscar en Pinterest (servicio externo no disponible).'); }
+});
+
+// apk / modoapk → búsqueda y descarga vía la API pública (keyless) de
+// Aptoide (ws75.aptoide.com). Reemplaza el scraper original.
+command({ name: 'apk', aliases: ['modoapk'], category: 'download', description: 'Descarga un APK desde Aptoide' },
+async (conn, m, args, text) => {
+    if (!text) return m.reply('Uso: .apk <nombre de la app>');
+    try {
+        await m.reply('🔎 Buscando APK...');
+        const search = await axios.get(`https://ws75.aptoide.com/api/7/apps/search/query=${encodeURIComponent(text)}/limit=1`, { timeout: 20000 });
+        const app = search.data?.datalist?.list?.[0];
+        if (!app) throw new Error('no encontrada');
+        const meta = await axios.get(`https://ws75.aptoide.com/api/7/app/getMeta/app_id=${app.id}`, { timeout: 20000 });
+        const file = meta.data?.nodes?.meta?.data?.file;
+        const dl = file?.path_alt || file?.path;
+        if (!dl) throw new Error('sin enlace de descarga');
+        const name = `${(app.package || app.name || 'app').replace(/[^\w.]/g, '_')}.apk`;
+        await m.reply(`📦 *${app.name}*\nv${file?.vername || '?'} — descargando...`);
+        const buf = await getBuffer(dl, { timeout: 180000 });
+        await conn.sendMessage(m.chat, { document: buf, fileName: name, mimetype: 'application/vnd.android.package-archive' }, { quoted: m });
+    } catch (e) { await m.reply('❌ No se pudo descargar el APK: ' + (e?.message || e)); }
+});
+
+// toanime → estilo anime (img2img). Sube la imagen y la pasa a un endpoint
+// keyless de estilización; degrada con mensaje claro si no responde.
+command({ name: 'toanime', category: 'media', description: 'Convierte una foto a estilo anime' },
+async (conn, m) => {
+    const target = m.quoted || m;
+    const mime = target.msg?.mimetype || '';
+    if (!/image/.test(mime)) return m.reply('Responde a una imagen con .toanime');
+    try {
+        await m.reply('🎨 Procesando estilo anime...');
+        // 1) subir a catbox para obtener URL pública
+        const buf = await target.download();
+        const FormData = (await import('form-data')).default;
+        const form = new FormData();
+        form.append('reqtype', 'fileupload');
+        form.append('fileToUpload', buf, 'img.jpg');
+        const up = await axios.post('https://catbox.moe/user/api.php', form, { headers: form.getHeaders(), timeout: 60000 });
+        const imgUrl = String(up.data).trim();
+        // 2) pasar a endpoint de estilización
+        const res = await axios.get(`https://api.vreden.my.id/api/toanime?url=${encodeURIComponent(imgUrl)}`, { timeout: 60000 });
+        const out = res.data?.result?.url || res.data?.result;
+        if (!out || typeof out !== 'string') throw new Error('sin resultado');
+        const outBuf = await getBuffer(out, { timeout: 60000 });
+        await conn.sendMessage(m.chat, { image: outBuf, caption: '🌸 Estilo anime' }, { quoted: m });
+    } catch { await m.reply('❌ No se pudo convertir a anime (servicio externo no disponible).'); }
+});
