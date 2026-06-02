@@ -1,5 +1,25 @@
 // index.js — Punto de entrada (ESM, Baileys v7).
 //
+// Filtro de warnings: silencia SOLO deprecaciones ruidosas de dependencias
+// (p.ej. DEP0180 fs.Stats, que viene de un paquete transitivo y no de
+// nuestro código), sin ocultar errores reales ni otros warnings útiles.
+{
+    const _emit = process.emitWarning.bind(process);
+    const SILENCED = new Set(['DEP0180', 'DEP0190', 'DEP0040']);
+    process.emitWarning = (warning, ...rest) => {
+        const code = (rest[0] && typeof rest[0] === 'object' ? rest[0].code : rest[1]) || '';
+        if (SILENCED.has(code)) return;
+        if (typeof warning === 'string' && /DEP0180|fs\.Stats constructor/.test(warning)) return;
+        return _emit(warning, ...rest);
+    };
+    process.removeAllListeners('warning');
+    process.on('warning', (w) => {
+        if (SILENCED.has(w?.code) || /fs\.Stats constructor/.test(w?.message || '')) return;
+        if (w?.name === 'DeprecationWarning') return;
+        console.warn(w?.message || w);
+    });
+}
+//
 // Lógica de PAIRING CODE corregida según un bot funcional de referencia:
 //
 //   • requestPairingCode() se llama FUERA del event handler de
@@ -351,6 +371,18 @@ async function start() {
         // cambios de subject/desc/icon). Módulo independiente: tocar
         // kim/announcements.js NO afecta al despachador.
         attachAnnouncements(conn);
+
+        // ─ Restaurar sub-bots persistidos al conectar el bot principal ─
+        // (nueva arquitectura kim/subbots/: reconexión automática tolerante a fallos)
+        conn.ev.on('connection.update', async (update) => {
+            if (update.connection === 'open' && !conn.__subbotsRestored) {
+                conn.__subbotsRestored = true;
+                try {
+                    const { restoreSubBots } = await import('./kim/jadibot.js');
+                    await restoreSubBots(conn);
+                } catch (e) { console.error('[index] restoreSubBots:', e?.message || e); }
+            }
+        });
 
         // ─ QR (si elegimos QR): se muestra cuando aparece ─
         if (useQR) {
