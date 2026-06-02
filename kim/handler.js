@@ -23,11 +23,11 @@ import { DisconnectReason } from 'baileys';
 import util from 'util';
 import chalk from 'chalk';
 import { smsg, getGroupAdmins } from './helpers.js';
-import { getUser, getChat, getSettings } from './db.js';
+import { getUser, getChat, getSettings, db } from './db.js';
 import { runMiddleware } from './middleware.js';
 import './commands.js'; // ← side-effect import: registra TODOS los comandos
 import './commands_extra.js'; // ← comandos migrados desde el bot de referencia
-import './commands_pack2.js'; // ← #tag + economía BL (Lazos)
+import './commands_pack2.js'; // ← #tag + economía oficial JX/HG/AP + actividad + afinidad
 import './commands_pack3.js'; // ← gacha BL/Yaoi + interacciones anime SFW (GIFs)
 import './commands_pack4.js'; // ← perfiles, admin, utilidades, descargas, subbots
 import * as commands from './commands.js'; // para los atajos del owner
@@ -344,6 +344,18 @@ export class Handler {
 
             // Log
             this._logMsg(m, body);
+
+            // Conteo de actividad (ligero, sin escritura inmediata a disco):
+            // por usuario/grupo guardamos nº de mensajes y último visto.
+            if (m.isGroup && m.sender && !m.fromMe) {
+                try {
+                    const u = getUser(m.sender);
+                    u.activity ||= {};
+                    const a = (u.activity[m.chat] ||= { count: 0, last: 0 });
+                    a.count++; a.last = Date.now();
+                    db.markDirty(); // se persiste en el flush periódico, no aquí
+                } catch { /* */ }
+            }
 
             // Atajos del owner sin prefijo (>, =>, $)
             if (m.isOwner && !m._isCmd && body) {

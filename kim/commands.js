@@ -18,6 +18,7 @@ import moment from 'moment-timezone';
 import axios from 'axios';
 
 import { command, buildMenu, commandCount, aliasCount } from './registry.js';
+import { fmtMoney, fmtPremium, fmtAffinity } from './theme.js';
 import { runtime, getBuffer, isUrl } from './helpers.js';
 import { getUser, getChat, getSettings, db } from './db.js';
 
@@ -208,7 +209,7 @@ const COMMAND_META = [
 
     // ─── GAME ───
     { names: ['ppt', 'suit'], category: 'game', description: 'Piedra, papel, tijera' },
-    { names: ['slot', 'apuesta'], category: 'game', description: 'Tragamonedas (.slot <apuesta>)' },
+    { names: ['slot', 'apuesta'], category: 'game', description: 'Tragamonedas en Jinx Coins (.slot <apuesta>)' },
     { names: ['reto'], category: 'game', description: 'Un reto al azar' },
     { names: ['verdad'], category: 'game', description: 'Una pregunta de "verdad"' },
 
@@ -266,16 +267,16 @@ export async function execute(conn, m, rawCommand, args, text) {
                 const totalChats = Object.keys(db.data.chats).length;
                 const up = runtime(process.uptime());
                 const mem = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-                const header = `*🌸 ${global.botname || 'KimdanBot-MD'} 🌸*
-*˚₊·˚₊· ͟͟͞͞➻❥ v${global.vs || '3.0.0'}*
-
-*🍒 INFO BOT*
-*┊* Activo: ${up}
-*┊* RAM: ${mem} MB
-*┊* Usuarios: ${totalUsers}
-*┊* Chats: ${totalChats}
-*┊* Comandos: ${commandCount()} (${aliasCount()} con aliases)
-*┊* Creador: ${ownerName}
+                const header = `╭━━━〔 🌸 *${global.botname || 'KimdanBot-MD'}* 〕━━━⬣
+┃ ✦ _Bot BL / Yaoi · Jinx_
+┃ ✦ v${global.vs || '3.0.0'}
+┃ ⏱ Activo: ${up}
+┃ 🧠 RAM: ${mem} MB
+┃ 👥 Usuarios: ${totalUsers} · 💬 Chats: ${totalChats}
+┃ ⌨️ Comandos: ${commandCount()} (${aliasCount()} alias)
+┃ 💜 JX · 💎 HG · 🤝 AP
+┃ 👑 Creador: ${ownerName}
+╰━━━━━━━━━━━━━⬣
 `;
                 const list = buildMenu(p);
                 const fullText = header + '\n' + list + `\n\n*╰ ${global.botname || 'KimdanBot-MD'} ╯*`;
@@ -406,8 +407,19 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'restart': {
                 if (!needOwner(m)) return;
-                await m.reply('🔄 Reiniciando...').catch(() => {});
-                process.exit(1);
+                await m.reply('🔄 *Reiniciando bot...*\nLa sesión y los datos de MongoDB se conservan.').catch(() => {});
+                // Persistir DB antes de salir (no perder datos).
+                try { await db.flush?.(); } catch { /* */ }
+                // Re-spawn: si hay gestor (pm2/systemd) él reinicia; si no,
+                // lanzamos un proceso hijo independiente que arranca de nuevo.
+                try {
+                    const cp = await import('child_process');
+                    const proc = cp.spawn(process.argv[0], process.argv.slice(1), {
+                        cwd: process.cwd(), detached: true, stdio: 'inherit',
+                    });
+                    proc.unref();
+                } catch (e) { console.error('[restart] spawn:', e?.message || e); }
+                setTimeout(() => process.exit(0), 1500);
                 break;
             }
 
@@ -1459,15 +1471,16 @@ export async function execute(conn, m, rawCommand, args, text) {
                     `• Nivel: ${u.level || 0}\n` +
                     `• EXP: ${u.exp || 0}\n` +
                     `• Rol: ${u.role || 'Novato'}\n` +
-                    `• 💎 Diamantes: ${u.diamond || 0}\n` +
-                    `• 💰 Dinero: ${u.money || 0}`
+                    `• 💎 Heart Gems: ${u.corazones || 0}\n` +
+                    `• 💜 Jinx Coins: ${u.money || 0}\n` +
+                    `• 🤝 Affinity: ${u.affinity || 0}`
                 );
                 break;
             }
 
             case 'bal': {
                 const u = getUser(m.sender);
-                await m.reply(`💰 Dinero: *${u.money || 0}*\n💎 Diamantes: *${u.diamond || 0}*\n⭐ Nivel: *${u.level || 0}*`);
+                await m.reply(`💜 Jinx Coins: *${u.money || 0}*\n💎 Heart Gems: *${u.corazones || 0}*\n🤝 Affinity: *${u.affinity || 0}*\n⭐ Nivel: *${u.level || 0}*`);
                 break;
             }
 
@@ -1478,7 +1491,7 @@ export async function execute(conn, m, rawCommand, args, text) {
                 u.money = (u.money || 0) + reward;
                 u.lastclaim = Date.now();
                 db.markDirty();
-                await m.reply(`💰 +${reward} monedas. Vuelve en 24h.`);
+                await m.reply(`💜 +${reward} Jinx Coins. Vuelve en 24h.`);
                 break;
             }
 
@@ -1492,19 +1505,21 @@ export async function execute(conn, m, rawCommand, args, text) {
                 db.markDirty();
                 const jobs = ['programador', 'diseñador', 'taxista', 'cocinero', 'cantante', 'profesor'];
                 const job = jobs[Math.floor(Math.random() * jobs.length)];
-                await m.reply(`💼 Trabajaste como *${job}* y ganaste *${reward}* monedas (+5 exp).`);
+                await m.reply(`💼 Trabajaste como *${job}* y ganaste *${reward}* 💜 JX (+5 exp).`);
                 break;
             }
 
             case 'mine': {
                 if (cooldown(m, 'lastmine', 15 * 60 * 1000)) return;
                 const u = getUser(m.sender);
-                const diamonds = Math.floor(Math.random() * 5) + 1;
-                u.diamond = (u.diamond || 0) + diamonds;
+                const jx = Math.floor(Math.random() * 400) + 100;       // 100–500 JX
+                u.money = (u.money || 0) + jx;
+                const gem = Math.random() < 0.08 ? 1 : 0;               // rara veta de HG
+                u.corazones = (u.corazones || 0) + gem;
                 u.exp = (u.exp || 0) + 8;
                 u.lastmine = Date.now();
                 db.markDirty();
-                await m.reply(`⛏ Minaste y encontraste *${diamonds}* diamantes 💎 (+8 exp).`);
+                await m.reply(`⛏ Minaste y extrajiste ${fmtMoney(jx)}${gem ? ` y ${fmtPremium(gem)} 💎 (¡veta rara!)` : ''} (+8 exp).`);
                 break;
             }
 
@@ -1515,10 +1530,10 @@ export async function execute(conn, m, rawCommand, args, text) {
                     .slice(0, 10);
                 if (!all.length) return m.reply('Sin datos.');
                 const list = all.map((u, i) =>
-                    `*${i + 1}.* @${u.jid.split('@')[0]} — ${u.money} 💰 (nivel ${u.level})`
+                    `*${i + 1}.* @${u.jid.split('@')[0]} — ${fmtMoney(u.money)} (nivel ${u.level})`
                 ).join('\n');
                 await conn.sendMessage(m.chat, {
-                    text: `🏆 *Top 10 por dinero*\n\n${list}`,
+                    text: `🏆 *Top 10 — Jinx Coins*\n\n${list}`,
                     mentions: all.map(u => u.jid),
                 });
                 break;
@@ -1530,7 +1545,7 @@ export async function execute(conn, m, rawCommand, args, text) {
                 if (!t || t === m.sender) return m.reply('Menciona o cita a la víctima.');
                 const me = getUser(m.sender);
                 const tgt = getUser(t);
-                if ((tgt.money || 0) < 100) return m.reply('Esa persona no tiene suficiente dinero.');
+                if ((tgt.money || 0) < 100) return m.reply('Esa persona no tiene suficientes Jinx Coins.');
                 const success = Math.random() > 0.5;
                 me.lastrob = Date.now();
                 if (success) {
@@ -1538,12 +1553,12 @@ export async function execute(conn, m, rawCommand, args, text) {
                     tgt.money -= amount;
                     me.money = (me.money || 0) + amount;
                     db.markDirty();
-                    await m.reply(`🦹 Le robaste *${amount}* monedas a @${t.split('@')[0]}.`, null, { mentions: [t] });
+                    await m.reply(`🦹 Le robaste ${fmtMoney(amount)} a @${t.split('@')[0]}.`, null, { mentions: [t] });
                 } else {
                     const fine = Math.floor((me.money || 0) * 0.1);
                     me.money = Math.max(0, (me.money || 0) - fine);
                     db.markDirty();
-                    await m.reply(`🚓 Te atraparon y pagaste *${fine}* monedas de multa.`);
+                    await m.reply(`🚓 Te atraparon y pagaste ${fmtMoney(fine)} de multa.`);
                 }
                 break;
             }
@@ -1568,9 +1583,9 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'slot': {
                 const bet = parseInt(args[0]);
-                if (!bet || bet < 10) return m.reply('Uso: .slot <apuesta> (mínimo 10)');
+                if (!bet || bet < 10) return m.reply('Uso: .slot <apuesta> (mínimo 10 JX)');
                 const u = getUser(m.sender);
-                if ((u.money || 0) < bet) return m.reply('No tienes suficiente dinero.');
+                if ((u.money || 0) < bet) return m.reply('No tienes suficientes Jinx Coins.');
                 const emojis = ['🍒', '🍓', '🍇', '🍉', '🍫', '💎'];
                 const r1 = emojis[Math.floor(Math.random() * emojis.length)];
                 const r2 = emojis[Math.floor(Math.random() * emojis.length)];
@@ -1581,7 +1596,7 @@ export async function execute(conn, m, rawCommand, args, text) {
                 u.money = (u.money || 0) + (multi > 0 ? bet * multi : -bet);
                 db.markDirty();
                 const msg = `🎰  ${r1} | ${r2} | ${r3}\n\n` +
-                    (multi > 0 ? `🎉 ¡Ganaste *${bet * multi}* monedas!` : `💔 Perdiste *${bet}* monedas.`);
+                    (multi > 0 ? `🎉 ¡Ganaste ${fmtMoney(bet * multi)}!` : `💔 Perdiste ${fmtMoney(bet)}.`);
                 await m.reply(msg);
                 break;
             }
@@ -1730,11 +1745,21 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'idioma': {
                 const lang = (args[0] || '').toLowerCase();
-                if (lang !== 'es' && lang !== 'en') return m.reply('Uso: .idioma es | en');
-                const u = getUser(m.sender);
-                u.Language = lang;
-                db.markDirty();
-                await m.reply(`✅ Idioma: ${lang === 'es' ? 'español 🇪🇸' : 'english 🇬🇧'}`);
+                const scope = (args[1] || 'user').toLowerCase(); // user|group|global
+                const SUPPORTED = ['es','en','pt','fr','de','it','ja','ko','zh'];
+                if (!SUPPORTED.includes(lang)) return m.reply(`Uso: .idioma <${SUPPORTED.join('|')}> [user|group|global]`);
+                if (scope === 'global') {
+                    if (!m.isOwner) return m.reply('⚠️ Solo el owner cambia el idioma global.');
+                    const { setGlobalLang } = await import('./idiomas/translate.js');
+                    setGlobalLang(lang); await m.reply(`🌐 Idioma global: ${lang}`);
+                } else if (scope === 'group') {
+                    if (!m.isGroup) return m.reply('Solo en grupos.');
+                    if (!m.isSenderAdmin && !m.isOwner) return m.reply('⚠️ Solo admins.');
+                    getChat(m.chat).lang = lang; db.markDirty(); await m.reply(`👥 Idioma del grupo: ${lang}`);
+                } else {
+                    const u = getUser(m.sender); u.lang = lang; u.Language = (lang === 'en' ? 'en' : 'es'); db.markDirty();
+                    await m.reply(`✅ Tu idioma: ${lang}`);
+                }
                 break;
             }
 

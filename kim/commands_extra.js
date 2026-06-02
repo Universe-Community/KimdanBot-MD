@@ -20,7 +20,7 @@ import fs from 'fs';
 import axios from 'axios';
 
 import { command } from './registry.js';
-import { getBuffer, fetchJson, isUrl, getRandom, sleep } from './helpers.js';
+import { getBuffer, fetchJson, isUrl, getRandom, sleep, ytAudioUrl, ytVideoUrl } from './helpers.js';
 import { getUser, getChat, db } from './db.js';
 
 // ─── Helpers de permisos (equivalentes a commands.js) ──────────────────
@@ -77,23 +77,120 @@ async function runFfmpeg(inputBuf, args, outExt = 'mp3') {
 // INFO / OWNER
 // ═══════════════════════════════════════════════════════════════════════
 
-command({ name: 'imagen', category: 'info', description: 'Envía la foto del chat/grupo' },
-async (conn, m) => {
+// ─── Metadatos de todos los comandos migrados ──────────────────────────
+const COMMAND_META = [
+    { name: 'imagen', category: 'info', description: 'Envía la foto del chat/grupo' },
+    { name: 'colaborador1', aliases: ['colab1'], category: 'info', description: 'Datos de un colaborador' },
+    { name: 'getcase', category: 'owner', hidden: true, description: 'Muestra el código de un comando' },
+    { name: 'update', aliases: ['actualizar'], category: 'owner', description: 'git pull para actualizar' },
+    { name: 'listagrupos', aliases: ['groupkim', 'grouplist', 'listagru'], category: 'owner', description: 'Lista los grupos del bot' },
+    { name: 'autoadmin', aliases: ['tenerpoder'], category: 'owner', description: 'El owner se da admin a sí mismo' },
+    { name: 'join', aliases: ['unete'], category: 'owner', description: 'El bot se une a un grupo por link' },
+    { name: 'leave', aliases: ['salte'], category: 'owner', description: 'El bot sale del grupo' },
+    { name: 'editinfo', aliases: ['editarinfo'], category: 'group', description: 'Bloquea/desbloquea edición de info del grupo' },
+    { name: 'totag', category: 'group', description: 'Reenvía el mensaje citado etiquetando a todos' },
+    { name: 'aprobar', aliases: ['prueba'], category: 'group', description: 'Aprueba solicitudes de ingreso pendientes' },
+    { name: 'rechazar', aliases: ['prueba2'], category: 'group', description: 'Rechaza solicitudes de ingreso pendientes' },
+    { name: 'allmessage', category: 'config', description: 'Activa/desactiva bienvenida+despedida+avisos' },
+    { name: 'autolevel', category: 'config', description: 'Auto-subida de nivel del grupo' },
+    { name: 'buy', aliases: ['buyall'], category: 'rpg', description: 'Compra diamantes con EXP (.buy <n> | .buyall)' },
+    { name: 'cofre', category: 'rpg', description: 'Abre un cofre diario (nivel 9+)' },
+    { name: 'nivel', aliases: ['levelup'], category: 'rpg', description: 'Sube de nivel con tu EXP' },
+    { name: 'myns', category: 'rpg', hidden: true, description: 'Tu número de serie de registro' },
+    { name: 'simi', aliases: ['alexa', 'siri'], category: 'fun', description: 'Habla con la IA' },
+    { name: 'follar', aliases: ['violar'], category: 'fun', description: 'Broma para adultos (texto)' },
+    { name: 'pregunta', aliases: ['preg'], category: 'game', description: 'Hazme una pregunta de sí/no' },
+    { name: 'doxear', aliases: ['doxxeo'], category: 'fun', description: 'Doxxeo falso (broma)' },
+    { name: 'personalidad', category: 'fun', description: 'Analiza la personalidad (broma)' },
+    { name: 'topgays', aliases: ['topotakus'], category: 'fun', description: 'Top 10 del grupo (broma)' },
+    { name: 'alegay', category: 'fun', description: '% de alegría' },
+    { name: 'diego', category: 'fun', hidden: true, description: 'ASCII art' },
+    { name: 'mario', category: 'fun', hidden: true, description: 'ASCII art' },
+    { name: 'ia', aliases: ['chatgpt'], category: 'tools', description: 'Pregúntale a la IA (texto)' },
+    { name: 'aimg', aliases: ['imagine', 'dalle', 'dall-e', 'ia2'], category: 'tools', description: 'Genera una imagen con IA' },
+    { name: 'wallpaper', category: 'search', description: 'Genera un wallpaper con IA' },
+    { name: 'blackpink', aliases: ['bloodfrosted', 'neon', 'minion', 'cloud', 'avenger', 'space'], category: 'fun', description: 'Logo con texto estilizado (IA)' },
+    { name: 'google', category: 'search', description: 'Busca en la web' },
+    { name: 'gitclone', category: 'download', description: 'Descarga un repo de GitHub (.zip)' },
+    { name: 'mediafire', category: 'download', description: 'Descarga un archivo de MediaFire' },
+    { name: 'lyrics', aliases: ['letra'], category: 'search', description: 'Letra de una canción (artista - título)' },
+    { name: 'play3', aliases: ['playdoc', 'playaudiodoc', 'ytmp3doc'], category: 'download', description: 'YouTube audio como documento' },
+    { name: 'play4', aliases: ['playdoc2', 'playvideodoc', 'ytmp4doc'], category: 'download', description: 'YouTube video como documento' },
+    { name: 'facebook', aliases: ['fb'], category: 'download', description: 'Descarga video de Facebook' },
+    { name: 'instagram', aliases: ['ig'], category: 'download', description: 'Descarga de Instagram' },
+    { name: 'igstalk', aliases: ['iig'], category: 'search', description: 'Información de un perfil de Instagram' },
+    { name: 'wm', aliases: ['take'], category: 'sticker', description: 'Re-empaqueta un sticker' },
+    { name: 'tourl', category: 'tools', description: 'Sube una imagen/video y devuelve su URL' },
+    { name: 'bass', aliases: ['blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore', 'reverse', 'robot', 'slow', 'smooth', 'squirrel'], category: 'media', description: 'Aplica efectos a un audio' },
+    { name: 'serbot', aliases: ['qr', 'jadibot'], category: 'owner', description: 'Conecta un sub-bot (QR o --code)' },
+    { name: 'sercode', category: 'owner', description: 'Conecta un sub-bot por código de 8 dígitos' },
+    { name: 'deljadibot', aliases: ['stop'], category: 'owner', description: 'Desconecta tu sub-bot' },
+    { name: 'bots', aliases: ['listbots'], category: 'info', description: 'Lista los sub-bots conectados' },
+    { name: 'listonline', aliases: ['liston'], category: 'group', description: 'Lista miembros marcados como en línea' },
+    { name: 'testt', category: 'owner', hidden: true, description: 'Mensaje de prueba (debug)' },
+    { name: 'hd', category: 'tools', description: 'Mejora la calidad de una imagen (x2)' },
+    { name: 'spotify', aliases: ['music'], category: 'download', description: 'Descarga una canción por nombre' },
+    { name: 'pinterest', category: 'search', description: 'Busca imágenes en Pinterest' },
+    { name: 'apk', aliases: ['modoapk'], category: 'download', description: 'Descarga un APK desde Aptoide' },
+    { name: 'toanime', category: 'media', description: 'Convierte una foto a estilo anime' },
+    { name: 'yaoi', category: 'fun', description: 'Arte anime del género (SFW)' },
+];
+
+// Helpers compartidos por play3/play4 (YouTube como documento)
+async function ytDocAudio(conn, m, text) {
+    if (!text) return m.reply('Uso: .' + m.command + ' <canción o link>');
+    let yts;
+    try { ({ default: yts } = await import('yt-search')); }
+    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+    const r = await yts(text);
+    const v = r.videos?.[0];
+    if (!v) return m.reply('Sin resultados.');
+    try {
+        const dl = await ytAudioUrl(v.url);
+        if (!dl) throw new Error('no url');
+        const buf = await getBuffer(dl, { timeout: 120000 });
+        await conn.sendMessage(m.chat, { document: buf, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
+    } catch {
+        await m.reply(`🎵 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+    }
+}
+async function ytDocVideo(conn, m, text) {
+    if (!text) return m.reply('Uso: .' + m.command + ' <video o link>');
+    let yts;
+    try { ({ default: yts } = await import('yt-search')); }
+    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
+    const r = await yts(text);
+    const v = r.videos?.[0];
+    if (!v) return m.reply('Sin resultados.');
+    try {
+        const dl = await ytVideoUrl(v.url);
+        if (!dl) throw new Error('no url');
+        const buf = await getBuffer(dl, { timeout: 180000 });
+        await conn.sendMessage(m.chat, { document: buf, mimetype: 'video/mp4', fileName: `${v.title}.mp4` }, { quoted: m });
+    } catch {
+        await m.reply(`🎬 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+    }
+}
+
+export async function execute(conn, m, cmd, args, text) {
+    switch (cmd) {
+    case 'imagen': {
+
     try {
         const url = await conn.profilePictureUrl(m.chat, 'image');
         const buf = await getBuffer(url);
         await conn.sendMessage(m.chat, { image: buf, caption: '🖼️ Foto del chat.' }, { quoted: m });
     } catch { await m.reply('❌ Este chat no tiene foto o es privada.'); }
-});
+        break;
+    }
+    case 'colaborador1': {
 
-command({ name: 'colaborador1', aliases: ['colab1'], category: 'info', description: 'Datos de un colaborador' },
-async (conn, m) => {
     const c = global.owner?.find(o => Array.isArray(o) && o[1]) || ['', 'Equipo'];
     await m.reply(`🌸 *Colaborador*\n\n• Nombre: ${c[1] || 'Equipo KimdanBot'}\n• Rol: Colaborador oficial`);
-});
+        break;
+    }
+    case 'getcase': {
 
-command({ name: 'getcase', category: 'owner', hidden: true, description: 'Muestra el código de un comando' },
-async (conn, m, args) => {
     if (!needOwner(m)) return;
     if (!args[0]) return m.reply('🚩 Indica el nombre del case. Ej: .getcase ping');
     try {
@@ -103,22 +200,27 @@ async (conn, m, args) => {
         const body = 'case ' + `'${args[0]}'` + src.split(marker)[1].split('\n            case ')[0];
         await m.reply(body.slice(0, 3500));
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'update': {
 
-command({ name: 'update', aliases: ['actualizar'], category: 'owner', description: 'git pull para actualizar' },
-async (conn, m, args, text) => {
     if (!needOwner(m)) return;
     try {
-        const { execSync } = await import('child_process');
+        const { execSync, spawn } = await import('child_process');
         let out = execSync('git pull' + (text ? ' ' + text : ''), { encoding: 'utf-8', timeout: 60000 }).toString();
-        if (/Already up to date/i.test(out)) out = '✅ Nada por actualizar.';
-        else if (/Updating/i.test(out)) out = '✅ Actualizado:\n\n' + out;
-        await m.reply(out.slice(0, 3500));
+        if (/Already up to date/i.test(out)) { await m.reply('✅ Nada por actualizar.'); break; }
+        await m.reply('✅ *Actualizado:*\n\n' + out.slice(0, 3000) + '\n\n🔄 Reiniciando para aplicar cambios...');
+        try { await db.flush?.(); } catch { /* */ }
+        try {
+            const proc = spawn(process.argv[0], process.argv.slice(1), { cwd: process.cwd(), detached: true, stdio: 'inherit' });
+            proc.unref();
+        } catch (e) { console.error('[update] respawn:', e?.message || e); }
+        setTimeout(() => process.exit(0), 1500);
     } catch (e) { await m.reply('❌ git pull falló:\n' + String(e?.message || e).slice(0, 1500)); }
-});
+        break;
+    }
+    case 'listagrupos': {
 
-command({ name: 'listagrupos', aliases: ['groupkim', 'grouplist', 'listagru'], category: 'owner', description: 'Lista los grupos del bot' },
-async (conn, m) => {
     if (!needOwner(m)) return;
     try {
         const all = await conn.groupFetchAllParticipating();
@@ -127,19 +229,19 @@ async (conn, m) => {
         const list = groups.map((g, i) => `${i + 1}. *${g.subject}* (${g.participants?.length || 0} miembros)\n   ${g.id}`).join('\n\n');
         await m.reply(`🌸 *Grupos (${groups.length}):*\n\n${list}`.slice(0, 3800));
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'autoadmin': {
 
-command({ name: 'autoadmin', aliases: ['tenerpoder'], category: 'owner', description: 'El owner se da admin a sí mismo' },
-async (conn, m) => {
     if (!needGroup(m) || !needOwner(m) || !needBotAdmin(m)) return;
     try {
         await conn.groupParticipantsUpdate(m.chat, [m.sender], 'promote');
         await m.reply('😎 Listo, ahora eres admin.');
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'join': {
 
-command({ name: 'join', aliases: ['unete'], category: 'owner', description: 'El bot se une a un grupo por link' },
-async (conn, m, args, text) => {
     if (!needOwner(m)) return;
     const link = (text || '').match(/chat\.whatsapp\.com\/([0-9A-Za-z]+)/);
     if (!link) return m.reply('Uso: .join <link de invitación>');
@@ -147,21 +249,17 @@ async (conn, m, args, text) => {
         await conn.groupAcceptInvite(link[1]);
         await m.reply('✅ Me uní al grupo.');
     } catch (e) { await m.reply('❌ No pude unirme: ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'leave': {
 
-command({ name: 'leave', aliases: ['salte'], category: 'owner', description: 'El bot sale del grupo' },
-async (conn, m) => {
     if (!needGroup(m) || !needOwner(m)) return;
     await m.reply('👋 Adiós, fue un gusto. Hasta pronto.');
     try { await conn.groupLeave(m.chat); } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'editinfo': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// GRUPO (herramientas)
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'editinfo', aliases: ['editarinfo'], category: 'group', description: 'Bloquea/desbloquea edición de info del grupo' },
-async (conn, m, args) => {
     if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
     const a = (args[0] || '').toLowerCase();
     if (a !== 'open' && a !== 'close') return m.reply('Uso: .editinfo open | close');
@@ -169,10 +267,10 @@ async (conn, m, args) => {
         await conn.groupSettingUpdate(m.chat, a === 'open' ? 'unlocked' : 'locked');
         await m.reply(a === 'open' ? '✅ Todos pueden editar la info.' : '🔒 Solo admins editan la info.');
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'totag': {
 
-command({ name: 'totag', category: 'group', description: 'Reenvía el mensaje citado etiquetando a todos' },
-async (conn, m) => {
     if (!needGroup(m)) return;
     if (!m.quoted) return m.reply('Responde a un mensaje con .totag');
     const jids = (m.participants || []).map(p => p.id).filter(Boolean);
@@ -196,10 +294,10 @@ async (conn, m) => {
         const body = m.quoted.text || m.quoted.msg?.caption || '📢';
         await conn.sendMessage(m.chat, { text: body, mentions: jids }, { quoted: m });
     }
-});
+        break;
+    }
+    case 'aprobar': {
 
-command({ name: 'aprobar', aliases: ['prueba'], category: 'group', description: 'Aprueba solicitudes de ingreso pendientes' },
-async (conn, m) => {
     if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
     try {
         const reqs = await conn.groupRequestParticipantsList(m.chat);
@@ -208,10 +306,10 @@ async (conn, m) => {
         await conn.groupRequestParticipantsUpdate(m.chat, jids, 'approve');
         await m.reply(`✅ Aprobadas ${jids.length} solicitud(es).`);
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'rechazar': {
 
-command({ name: 'rechazar', aliases: ['prueba2'], category: 'group', description: 'Rechaza solicitudes de ingreso pendientes' },
-async (conn, m) => {
     if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
     try {
         const reqs = await conn.groupRequestParticipantsList(m.chat);
@@ -220,10 +318,10 @@ async (conn, m) => {
         await conn.groupRequestParticipantsUpdate(m.chat, jids, 'reject');
         await m.reply(`🚫 Rechazadas ${jids.length} solicitud(es).`);
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'allmessage': {
 
-command({ name: 'allmessage', category: 'config', description: 'Activa/desactiva bienvenida+despedida+avisos' },
-async (conn, m, args) => {
     if (!needGroupAdmin(m)) return;
     const a = (args[0] || '').toLowerCase();
     if (a !== 'on' && a !== 'off') return m.reply('Uso: .allmessage on | off');
@@ -232,10 +330,10 @@ async (conn, m, args) => {
     c.welcome = v; c.bye = v; c.detect = v;
     db.markDirty();
     await m.reply(v ? '✅ Bienvenida, despedida y avisos ACTIVADOS.' : '🍃 Bienvenida, despedida y avisos DESACTIVADOS.');
-});
+        break;
+    }
+    case 'autolevel': {
 
-command({ name: 'autolevel', category: 'config', description: 'Auto-subida de nivel del grupo' },
-async (conn, m, args) => {
     if (!needGroupAdmin(m)) return;
     const a = (args[0] || '').toLowerCase();
     if (a !== 'on' && a !== 'off') return m.reply('Uso: .autolevel on | off');
@@ -243,14 +341,10 @@ async (conn, m, args) => {
     c.autolevelup = a === 'on';
     db.markDirty();
     await m.reply(c.autolevelup ? '✅ Auto-nivel activado.' : '🍃 Auto-nivel desactivado.');
-});
+        break;
+    }
+    case 'buy': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// RPG (economía extendida) — adaptado a los campos de db.js del principal
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'buy', aliases: ['buyall'], category: 'rpg', description: 'Compra diamantes con EXP (.buy <n> | .buyall)' },
-async (conn, m, args, text) => {
     const u = getUser(m.sender);
     let count;
     if (m.command === 'buyall') count = Math.floor((u.exp || 0) / 450);
@@ -262,10 +356,10 @@ async (conn, m, args, text) => {
     u.diamond = (u.diamond || 0) + count;
     db.markDirty();
     await m.reply(`╔═❖ *NOTA DE PAGO*\n║ Compraste: *${count}* 💎\n║ Gastaste: *${cost}* EXP\n╚═══════════`);
-});
+        break;
+    }
+    case 'cofre': {
 
-command({ name: 'cofre', category: 'rpg', description: 'Abre un cofre diario (nivel 9+)' },
-async (conn, m) => {
     const u = getUser(m.sender);
     if ((u.level || 0) < 9) return m.reply('❇️ Necesitas nivel 9 para usar el cofre. Mira tu nivel con .nivel');
     const last = u.lastcofre || 0;
@@ -282,10 +376,10 @@ async (conn, m) => {
     u.lastcofre = Date.now();
     db.markDirty();
     await m.reply(`╔══🎉══⬣\n║🛒 *OBTIENES UN COFRE*\n║⚡ ${exp} EXP\n║💎 ${dia} Diamantes\n║🪙 ${money} Coins\n╚═════════⬣`);
-});
+        break;
+    }
+    case 'nivel': {
 
-command({ name: 'nivel', aliases: ['levelup'], category: 'rpg', description: 'Sube de nivel con tu EXP' },
-async (conn, m) => {
     const u = getUser(m.sender);
     const mult = global.multiplier || 90;
     const need = (lvl) => Math.round(mult * (lvl + 1) * (Math.pow(lvl + 1, 1.4)));
@@ -298,21 +392,17 @@ async (conn, m) => {
     u.level = lvl;
     db.markDirty();
     await m.reply(`╭╌「 *LEVEL UP 🎊* 」\n├ 🥳 ${m.pushName || ''} ¡Felicidades!\n├ NIVEL ANTERIOR: ${before}\n├ NIVEL ACTUAL: ${u.level}\n├ RANGO: ${u.role || 'Novato'}\n╰╌ Interactúa más para subir.`);
-});
+        break;
+    }
+    case 'myns': {
 
-command({ name: 'myns', category: 'rpg', hidden: true, description: 'Tu número de serie de registro' },
-async (conn, m) => {
     const { createHash } = await import('crypto');
     const sn = createHash('md5').update(m.sender).digest('hex');
     await m.reply(`🔑 Tu número de serie:\n${sn}`);
-});
+        break;
+    }
+    case 'simi': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// JUEGOS / DIVERSIÓN
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'simi', aliases: ['alexa', 'siri'], category: 'fun', description: 'Habla con la IA' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('💬 Escríbeme algo. Ej: .simi hola');
     try {
         await conn.sendPresenceUpdate('composing', m.chat).catch(() => {});
@@ -320,27 +410,27 @@ async (conn, m, args, text) => {
         const out = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
         await m.reply((out || '🤖 ...').slice(0, 3500));
     } catch (e) { await m.reply('🤖 La IA no respondió, intenta de nuevo.'); }
-});
+        break;
+    }
+    case 'follar': {
 
-command({ name: 'follar', aliases: ['violar'], category: 'fun', description: 'Broma para adultos (texto)' },
-async (conn, m, args, text) => {
     const tgt = resolveTarget(m, text);
     if (!tgt) return m.reply('Etiqueta o menciona a alguien.');
     await conn.sendMessage(m.chat, {
         text: `🥵 *@${m.sender.split('@')[0]}* le dio cariño intenso a *@${tgt.split('@')[0]}* (?) 😳`,
         mentions: [m.sender, tgt],
     }, { quoted: m });
-});
+        break;
+    }
+    case 'pregunta': {
 
-command({ name: 'pregunta', aliases: ['preg'], category: 'game', description: 'Hazme una pregunta de sí/no' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('🤔 ¿Y la pregunta? Ej: .pregunta ¿lloverá mañana?');
     const r = pickRandom(['no', 'sí', 'no sé', 'puede ser', 'no creo', 'obvio', 'jamás', 'tal vez']);
     await m.reply(`🔸 *Pregunta:* ${text}\n🔸 *Respuesta:* ${r}`);
-});
+        break;
+    }
+    case 'doxear': {
 
-command({ name: 'doxear', aliases: ['doxxeo'], category: 'fun', description: 'Doxxeo falso (broma)' },
-async (conn, m, args, text) => {
     const tgt = resolveTarget(m, text);
     const name = tgt ? `@${tgt.split('@')[0]}` : (text || m.pushName || 'usuario');
     const { key } = await conn.sendMessage(m.chat, { text: '😱 *¡Empezando doxxeo!*', mentions: tgt ? [tgt] : [] }, { quoted: m });
@@ -350,10 +440,10 @@ async (conn, m, args, text) => {
     }
     const fake = `🤣 *Persona "hackeada" con éxito*\n\n*Objetivo:* ${name}\n*IP:* 92.28.211.234\n*ISP:* Ucom Universal\n*DNS:* 8.8.8.8\n*MAC:* 5A:78:3E:7E:00\n*Gateway:* 192.168.0.1\n*Puertos:* 80, 443, 8080\n\n_(Es 100% una broma 😜)_`;
     await conn.sendMessage(m.chat, { text: fake, mentions: tgt ? [tgt] : [], edit: key }).catch(() => {});
-});
+        break;
+    }
+    case 'personalidad': {
 
-command({ name: 'personalidad', category: 'fun', description: 'Analiza la personalidad (broma)' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Ingresa un nombre. Ej: .personalidad Ana');
     const pct = () => pickRandom(['6%', '20%', '35%', '49%', '66%', '78%', '92%', '99%', '0.4%']);
     await m.reply(`┏━ *PERSONALIDAD* ━┓
@@ -365,10 +455,10 @@ async (conn, m, args, text) => {
 ┃ Coraje: ${pct()}
 ┃ Fama: ${pct()}
 ┗━━━━━━━━━━━`);
-});
+        break;
+    }
+    case 'topgays': {
 
-command({ name: 'topgays', aliases: ['topotakus'], category: 'fun', description: 'Top 10 del grupo (broma)' },
-async (conn, m) => {
     if (!needGroup(m)) return;
     const members = (m.participants || []).map(p => p.id);
     if (members.length < 3) return m.reply('No hay suficientes miembros.');
@@ -377,39 +467,36 @@ async (conn, m) => {
     const title = m.command === 'topotakus' ? '🌸 TOP 10 OTAKUS DEL GRUPO 🌸' : '🌈 TOP 10 DEL GRUPO 🌈';
     const list = sel.map((j, i) => `*${i + 1}.* @${j.split('@')[0]}`).join('\n');
     await conn.sendMessage(m.chat, { text: `${title}\n\n${list}`, mentions: sel }, { quoted: m });
-});
+        break;
+    }
+    case 'alegay': {
 
-command({ name: 'alegay', category: 'fun', description: '% de alegría' },
-async (conn, m, args, text) => {
     const tgt = m.mentionedJid?.[0] ? `@${m.mentionedJid[0].split('@')[0]}` : (text || m.pushName || 'tú');
     await conn.sendMessage(m.chat, { text: `🌈 ${tgt} tiene ${Math.floor(Math.random() * 101)}% de alegría 🎉`, mentions: m.mentionedJid || [] }, { quoted: m });
-});
+        break;
+    }
+    case 'diego': {
 
-command({ name: 'diego', category: 'fun', hidden: true, description: 'ASCII art' },
-async (conn, m) => {
     await m.reply('⣿⣿⣿⠟⢹⣶⣶⣝⣿⣿⣿\n⣿⣿⡟⢰⡌⠿⢿⣿⡾⢹⣿\n⣿⣿⣿⢸⣿⣤⣒⣶⣾⣳⡻\n⣿⣿⣿⠸⣿⣿⣿⣿⢇⠃⣟\n⣿⣿⣿⣇⢻⣿⣿⣯⣕⠧⢿');
-});
-command({ name: 'mario', category: 'fun', hidden: true, description: 'ASCII art' },
-async (conn, m) => {
+        break;
+    }
+    case 'mario': {
+
     await m.reply('🟥🟥🟥⬜⬜🟥🟥🟥\n🟥🟥🟥⬜⬜🟥🟥🟥\n🟥🟥🟥🟥🟥🟥🟥🟥\n🏻⬜🟦🏻🏻🟦⬜🏻\n🟫🏻🏻🏻🏻🏻🏻🟫\n🏻⬛⬛⬛⬛⬛⬛🏻');
-});
+        break;
+    }
+    case 'ia': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// IA (texto/imagen) — vía Pollinations (keyless, reemplaza lolhuman/openai)
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'ia', aliases: ['chatgpt'], category: 'tools', description: 'Pregúntale a la IA (texto)' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .ia <pregunta>');
     try {
         const res = await axios.get(`https://text.pollinations.ai/${encodeURIComponent(text)}`, { timeout: 45000 });
         const out = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
         await m.reply((out || '🤖 ...').slice(0, 3800));
     } catch (e) { await m.reply('❌ La IA no respondió: ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'aimg': {
 
-command({ name: 'aimg', aliases: ['imagine', 'dalle', 'dall-e', 'ia2'], category: 'tools', description: 'Genera una imagen con IA' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .aimg <descripción>');
     try {
         await m.reply('🎨 Generando imagen...');
@@ -418,10 +505,10 @@ async (conn, m, args, text) => {
         if (!buf) throw new Error('Sin respuesta del generador.');
         await conn.sendMessage(m.chat, { image: buf, caption: `🎨 ${text}` }, { quoted: m });
     } catch (e) { await m.reply('❌ No se pudo generar la imagen: ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'wallpaper': {
 
-command({ name: 'wallpaper', category: 'search', description: 'Genera un wallpaper con IA' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .wallpaper <tema>');
     try {
         const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(text + ' wallpaper 4k high quality')}?width=1280&height=720&nologo=true`;
@@ -429,12 +516,10 @@ async (conn, m, args, text) => {
         if (!buf) throw new Error('Sin respuesta.');
         await conn.sendMessage(m.chat, { image: buf, caption: `🖼️ Wallpaper: ${text}` }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'blackpink': {
 
-// Efectos de "logo" — la API lolhuman/textprome original está muerta;
-// se adaptan a generación de imagen con IA estilizada (keyless).
-command({ name: 'blackpink', aliases: ['bloodfrosted', 'neon', 'minion', 'cloud', 'avenger', 'space'], category: 'fun', description: 'Logo con texto estilizado (IA)' },
-async (conn, m, args, text) => {
     if (!text) return m.reply(`Uso: .${m.command} <texto>`);
     const styles = {
         blackpink: 'blackpink kpop neon pink logo text', bloodfrosted: 'frozen blood ice horror logo text',
@@ -449,14 +534,10 @@ async (conn, m, args, text) => {
         if (!buf) throw new Error('Sin respuesta.');
         await conn.sendMessage(m.chat, { image: buf, caption: `✨ Estilo: ${m.command}` }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'google': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// BÚSQUEDAS / DESCARGAS
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'google', category: 'search', description: 'Busca en la web' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .google <consulta>');
     try {
         const res = await axios.get('https://api.duckduckgo.com/', {
@@ -470,10 +551,10 @@ async (conn, m, args, text) => {
         if (out.trim() === `🔎 *Resultados para:* ${text}`) out += '_Sin resultados directos. Prueba .yts o .wiki._';
         await m.reply(out.slice(0, 3800));
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'gitclone': {
 
-command({ name: 'gitclone', category: 'download', description: 'Descarga un repo de GitHub (.zip)' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .gitclone <url de GitHub>');
     const mt = text.match(/github\.com\/([^/]+)\/([^/\s]+)/);
     if (!mt) return m.reply('URL de GitHub inválida.');
@@ -487,10 +568,9 @@ async (conn, m, args, text) => {
             document: buf, fileName: `${repo}.zip`, mimetype: 'application/zip',
         }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
-
-command({ name: 'mediafire', category: 'download', description: 'Descarga un archivo de MediaFire' },
-async (conn, m, args, text) => {
+        break;
+    }
+    case 'mediafire': {
     if (!text || !/mediafire\.com/.test(text)) return m.reply('Uso: .mediafire <link de MediaFire>');
     try {
         const page = await axios.get(text.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
@@ -503,10 +583,10 @@ async (conn, m, args, text) => {
         const buf = await getBuffer(dl, { timeout: 120000 });
         await conn.sendMessage(m.chat, { document: buf, fileName: name, mimetype: 'application/octet-stream' }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'lyrics': {
 
-command({ name: 'lyrics', aliases: ['letra'], category: 'search', description: 'Letra de una canción (artista - título)' },
-async (conn, m, args, text) => {
     if (!text || !text.includes('-')) return m.reply('Uso: .lyrics <artista> - <título>\nEj: .lyrics Coldplay - Yellow');
     const [artist, title] = text.split('-').map(s => s.trim());
     try {
@@ -515,58 +595,18 @@ async (conn, m, args, text) => {
         if (!lyr) throw new Error('No encontré la letra.');
         await m.reply(`🎵 *${artist} — ${title}*\n\n${lyr}`.slice(0, 3800));
     } catch (e) { await m.reply('❌ No encontré la letra (usa el formato "artista - título").'); }
-});
-
-// Descargas de YouTube como DOCUMENTO. La descarga directa de YouTube
-// requiere scrapers externos cambiantes; usamos yt-search + un endpoint
-// keyless y degradamos a enlace si la descarga falla (sin romper).
-async function ytDocAudio(conn, m, text) {
-    if (!text) return m.reply('Uso: .' + m.command + ' <canción o link>');
-    let yts;
-    try { ({ default: yts } = await import('yt-search')); }
-    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
-    const r = await yts(text);
-    const v = r.videos?.[0];
-    if (!v) return m.reply('Sin resultados.');
-    try {
-        const api = `https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(v.url)}`;
-        const res = await axios.get(api, { timeout: 45000 });
-        const dl = res.data?.result?.download?.url || res.data?.result?.url;
-        if (!dl) throw new Error('no url');
-        const buf = await getBuffer(dl, { timeout: 120000 });
-        await conn.sendMessage(m.chat, { document: buf, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
-    } catch {
-        await m.reply(`🎵 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+        break;
     }
-}
-async function ytDocVideo(conn, m, text) {
-    if (!text) return m.reply('Uso: .' + m.command + ' <video o link>');
-    let yts;
-    try { ({ default: yts } = await import('yt-search')); }
-    catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
-    const r = await yts(text);
-    const v = r.videos?.[0];
-    if (!v) return m.reply('Sin resultados.');
-    try {
-        const api = `https://api.vreden.my.id/api/ytmp4?url=${encodeURIComponent(v.url)}`;
-        const res = await axios.get(api, { timeout: 60000 });
-        const dl = res.data?.result?.download?.url || res.data?.result?.url;
-        if (!dl) throw new Error('no url');
-        const buf = await getBuffer(dl, { timeout: 180000 });
-        await conn.sendMessage(m.chat, { document: buf, mimetype: 'video/mp4', fileName: `${v.title}.mp4` }, { quoted: m });
-    } catch {
-        await m.reply(`🎬 *${v.title}*\n${v.url}\n\n⚠️ La descarga directa no está disponible ahora; usa el enlace.`);
+    case 'play3': {
+        await (ytDocAudio(conn, m, text));
+        break;
     }
-}
-command({ name: 'play3', aliases: ['playdoc', 'playaudiodoc', 'ytmp3doc'], category: 'download', description: 'YouTube audio como documento' },
-async (conn, m, args, text) => ytDocAudio(conn, m, text));
-command({ name: 'play4', aliases: ['playdoc2', 'playvideodoc', 'ytmp4doc'], category: 'download', description: 'YouTube video como documento' },
-async (conn, m, args, text) => ytDocVideo(conn, m, text));
+    case 'play4': {
+        await (ytDocVideo(conn, m, text));
+        break;
+    }
+    case 'facebook': {
 
-// Redes sociales: las APIs originales (lolhuman) están muertas; se intenta
-// un endpoint keyless y se degrada con un mensaje claro (sin romper).
-command({ name: 'facebook', aliases: ['fb'], category: 'download', description: 'Descarga video de Facebook' },
-async (conn, m, args, text) => {
     if (!text || !/facebook\.com|fb\.watch/.test(text)) return m.reply('Uso: .facebook <link>');
     try {
         const res = await axios.get(`https://api.vreden.my.id/api/fbdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
@@ -575,10 +615,10 @@ async (conn, m, args, text) => {
         const buf = await getBuffer(dl, { timeout: 120000 });
         await conn.sendMessage(m.chat, { video: buf, mimetype: 'video/mp4', caption: '📥 Facebook' }, { quoted: m });
     } catch { await m.reply('❌ No se pudo descargar el video de Facebook (servicio externo no disponible).'); }
-});
+        break;
+    }
+    case 'instagram': {
 
-command({ name: 'instagram', aliases: ['ig'], category: 'download', description: 'Descarga de Instagram' },
-async (conn, m, args, text) => {
     if (!text || !/instagram\.com/.test(text)) return m.reply('Uso: .instagram <link>');
     try {
         const res = await axios.get(`https://api.vreden.my.id/api/igdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
@@ -592,10 +632,10 @@ async (conn, m, args, text) => {
             await conn.sendMessage(m.chat, isVid ? { video: buf, caption: '📥 Instagram' } : { image: buf, caption: '📥 Instagram' }, { quoted: m });
         }
     } catch { await m.reply('❌ No se pudo descargar de Instagram (servicio externo no disponible).'); }
-});
+        break;
+    }
+    case 'igstalk': {
 
-command({ name: 'igstalk', aliases: ['iig'], category: 'search', description: 'Información de un perfil de Instagram' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .igstalk <usuario>');
     try {
         const res = await axios.get(`https://api.vreden.my.id/api/igstalk?username=${encodeURIComponent(text.replace('@', '').trim())}`, { timeout: 25000 });
@@ -603,14 +643,10 @@ async (conn, m, args, text) => {
         if (!a) throw new Error('sin datos');
         await m.reply(`📷 *Instagram*\n\n• Usuario: ${a.username || text}\n• Nombre: ${a.fullName || a.fullname || '-'}\n• Posts: ${a.posts ?? '-'}\n• Seguidores: ${a.followers ?? '-'}\n• Siguiendo: ${a.following ?? '-'}\n• Bio: ${a.biography || a.bio || '-'}`);
     } catch { await m.reply('❌ No se pudo consultar el perfil (servicio externo no disponible).'); }
-});
+        break;
+    }
+    case 'wm': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// MEDIA / STICKERS / CONVERTIDORES
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'wm', aliases: ['take'], category: 'sticker', description: 'Re-empaqueta un sticker' },
-async (conn, m) => {
     const target = m.quoted || m;
     const mime = target.msg?.mimetype || '';
     if (!/webp|image|video/.test(mime)) return m.reply('Responde a un sticker/imagen/video con .wm');
@@ -619,10 +655,10 @@ async (conn, m) => {
         if (/video/.test(mime)) await conn.sendVideoAsSticker(m.chat, buf, m, { packname: global.packname, author: global.author });
         else await conn.sendImageAsSticker(m.chat, buf, m, { packname: global.packname, author: global.author });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'tourl': {
 
-command({ name: 'tourl', category: 'tools', description: 'Sube una imagen/video y devuelve su URL' },
-async (conn, m) => {
     const target = m.quoted || m;
     const mime = target.msg?.mimetype || '';
     if (!/image|video|audio/.test(mime)) return m.reply('Responde a una imagen/video/audio con .tourl');
@@ -638,25 +674,10 @@ async (conn, m) => {
         });
         await m.reply(`🔗 ${res.data}`);
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'bass': {
 
-// Efectos de audio (ffmpeg) — bass/blown/deep/earrape/fast/fat/nightcore/...
-const AUDIO_FX = {
-    bass: ['-af', 'equalizer=f=54:width_type=o:width=2:g=20'],
-    blown: ['-af', 'acrusher=.1:1:64:0:log'],
-    deep: ['-af', 'atempo=4/4,asetrate=44500*2/3'],
-    earrape: ['-af', 'volume=12'],
-    fast: ['-filter:a', 'atempo=1.63,asetrate=44100'],
-    fat: ['-filter:a', 'atempo=1.6,asetrate=22100'],
-    nightcore: ['-filter:a', 'atempo=1.06,asetrate=44100*1.25'],
-    reverse: ['-filter_complex', 'areverse'],
-    robot: ['-filter_complex', "afftfilt=real='hypot(re,im)*sin(0)':imag='hypot(re,im)*cos(0)':win_size=512:overlap=0.75"],
-    slow: ['-filter:a', 'atempo=0.7,asetrate=44100'],
-    smooth: ['-filter:a', 'atempo=0.9'],
-    squirrel: ['-filter:a', 'atempo=0.5,asetrate=65100'],
-};
-command({ name: 'bass', aliases: ['blown', 'deep', 'earrape', 'fast', 'fat', 'nightcore', 'reverse', 'robot', 'slow', 'smooth', 'squirrel'], category: 'media', description: 'Aplica efectos a un audio' },
-async (conn, m) => {
     const target = m.quoted || m;
     const mime = target.msg?.mimetype || '';
     if (!/audio|video/.test(mime)) return m.reply(`Responde a un audio con .${m.command}`);
@@ -668,118 +689,35 @@ async (conn, m) => {
         const out = await runFfmpeg(inBuf, fx, 'mp3');
         await conn.sendMessage(m.chat, { audio: out, mimetype: 'audio/mpeg', fileName: `${m.command}.mp3` }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
-
-// ═══════════════════════════════════════════════════════════════════════
-// LIBROS — migrado de MongoDB a la DB JSON local (db.data.others.books)
-// ═══════════════════════════════════════════════════════════════════════
-
-function getBooks() {
-    if (!db.data.others) db.data.others = {};
-    if (!Array.isArray(db.data.others.books)) db.data.others.books = [];
-    return db.data.others.books;
-}
-function findBook(books, q) {
-    const ql = String(q).toLowerCase();
-    return books.find(b => b.title?.toLowerCase().includes(ql) || String(b.id) === String(q));
-}
-
-command({ name: 'libros', aliases: ['botaolista', 'plist'], category: 'tools', description: 'Lista la biblioteca' },
-async (conn, m) => {
-    const books = getBooks();
-    if (!books.length) return m.reply('📚 No hay libros aún. Agrega con: .agglibro <título> | <enlace>');
-    const byGenre = {};
-    for (const b of books) (byGenre[b.genre || 'Sin género'] ||= []).push(b);
-    let out = '📚 *BIBLIOTECA*\n';
-    for (const [g, list] of Object.entries(byGenre)) {
-        out += `\n*${g}*\n`;
-        for (const b of list) out += `• [${b.id}] ${b.title}${b.author ? ' — ' + b.author : ''}\n`;
+        break;
     }
-    await m.reply(out.slice(0, 3800));
-});
+    case 'serbot': {
 
-command({ name: 'libro', category: 'tools', description: 'Busca un libro por título' },
-async (conn, m, args, text) => {
-    if (!text) return m.reply('Uso: .libro <título>');
-    const b = findBook(getBooks(), text);
-    if (!b) return m.reply('📕 No encontré ese libro.');
-    await m.reply(`📖 *${b.title}*\n• Autor: ${b.author || '-'}\n• Género: ${b.genre || '-'}\n• Enlace: ${b.link || '-'}`);
-});
-
-command({ name: 'agglibro', category: 'tools', description: 'Agrega un libro (.agglibro título | enlace)' },
-async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
-    if (!text || !text.includes('|')) return m.reply('Uso: .agglibro <título> | <enlace>');
-    const [title, link] = text.split('|').map(s => s.trim());
-    if (!title || !link) return m.reply('Faltan datos. Uso: .agglibro <título> | <enlace>');
-    const books = getBooks();
-    const id = (books.reduce((mx, b) => Math.max(mx, +b.id || 0), 0)) + 1;
-    books.push({ id, title, link, author: '', genre: '' });
-    db.markDirty();
-    await m.reply(`✅ Libro agregado con id *${id}*: ${title}`);
-});
-
-command({ name: 'dellibro', category: 'tools', description: 'Elimina un libro por id o título' },
-async (conn, m, args, text) => {
-    if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
-    if (!text) return m.reply('Uso: .dellibro <id o título>');
-    const books = getBooks();
-    const idx = books.findIndex(b => String(b.id) === String(text) || b.title?.toLowerCase() === text.toLowerCase());
-    if (idx === -1) return m.reply('No encontré ese libro.');
-    const [rm] = books.splice(idx, 1);
-    db.markDirty();
-    await m.reply(`🗑️ Eliminado: ${rm.title}`);
-});
-
-function makeBookUpdater(field, label) {
-    return async (conn, m, args, text) => {
-        if (!needGroupAdmin(m) && !m.isOwner) return m.reply('⚠️ Solo admins/owner.');
-        if (!text || !text.includes('|')) return m.reply(`Uso: .${m.command} <id o título> | <nuevo ${label}>`);
-        const [key, val] = text.split('|').map(s => s.trim());
-        const b = findBook(getBooks(), key);
-        if (!b) return m.reply('No encontré ese libro.');
-        b[field] = val;
-        db.markDirty();
-        await m.reply(`✅ ${label} actualizado para *${b.title}*: ${val}`);
-    };
-}
-command({ name: 'actitulo', aliases: ['actitle'], category: 'tools', description: 'Cambia el título de un libro' }, makeBookUpdater('title', 'título'));
-command({ name: 'acautor', aliases: ['acauthor'], category: 'tools', description: 'Cambia el autor de un libro' }, makeBookUpdater('author', 'autor'));
-command({ name: 'acgenero', aliases: ['acgenre'], category: 'tools', description: 'Cambia el género de un libro' }, makeBookUpdater('genre', 'género'));
-command({ name: 'acenlace', aliases: ['aclink'], category: 'tools', description: 'Cambia el enlace de un libro' }, makeBookUpdater('link', 'enlace'));
-
-// ═══════════════════════════════════════════════════════════════════════
-// JADIBOT (sub-bots)
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'serbot', aliases: ['qr', 'jadibot'], category: 'owner', description: 'Conecta un sub-bot (QR o --code)' },
-async (conn, m, args) => {
     const useQR = !(args[0] === '--code' || args[0] === 'code' || m.command === 'jadibot');
     const { startJadibot } = await import('./jadibot.js');
     await startJadibot(conn, m, useQR).catch(e => m.reply('❌ ' + (e?.message || e)));
-});
-command({ name: 'sercode', category: 'owner', description: 'Conecta un sub-bot por código de 8 dígitos' },
-async (conn, m) => {
+        break;
+    }
+    case 'sercode': {
+
     const { startJadibot } = await import('./jadibot.js');
     await startJadibot(conn, m, false).catch(e => m.reply('❌ ' + (e?.message || e)));
-});
-command({ name: 'deljadibot', aliases: ['stop'], category: 'owner', description: 'Desconecta tu sub-bot' },
-async (conn, m) => {
+        break;
+    }
+    case 'deljadibot': {
+
     const { stopJadibot } = await import('./jadibot.js');
     await stopJadibot(conn, m).catch(e => m.reply('❌ ' + (e?.message || e)));
-});
-command({ name: 'bots', aliases: ['listbots'], category: 'info', description: 'Lista los sub-bots conectados' },
-async (conn, m) => {
+        break;
+    }
+    case 'bots': {
+
     const { listJadibots } = await import('./jadibot.js');
     await m.reply(listJadibots());
-});
+        break;
+    }
+    case 'listonline': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// LISTAS / VARIOS
-// ═══════════════════════════════════════════════════════════════════════
-
-command({ name: 'listonline', aliases: ['liston'], category: 'group', description: 'Lista miembros marcados como en línea' },
-async (conn, m) => {
     if (!needGroup(m)) return;
     const online = Object.entries(conn.chats?.[m.chat]?.presences || {})
         .filter(([, p]) => p?.lastKnownPresence === 'available' || p?.lastKnownPresence === 'composing')
@@ -789,22 +727,16 @@ async (conn, m) => {
         text: `🟢 *En línea (${online.length}):*\n` + online.map(j => `• @${j.split('@')[0]}`).join('\n'),
         mentions: online,
     }, { quoted: m });
-});
+        break;
+    }
+    case 'testt': {
 
-command({ name: 'testt', category: 'owner', hidden: true, description: 'Mensaje de prueba (debug)' },
-async (conn, m) => {
     if (!needOwner(m)) return;
     await m.reply('✅ test ok — bot activo.');
-});
+        break;
+    }
+    case 'hd': {
 
-// ═══════════════════════════════════════════════════════════════════════
-// COMANDOS ADICIONALES (antes marcados "imposibles") — ahora adaptados
-// ═══════════════════════════════════════════════════════════════════════
-
-// hd → mejora/upscale local con sharp (x2 + nitidez). Reemplaza la API
-// remini original (muerta) por un procesamiento real sin servicios externos.
-command({ name: 'hd', category: 'tools', description: 'Mejora la calidad de una imagen (x2)' },
-async (conn, m) => {
     const target = m.quoted || m;
     const mime = target.msg?.mimetype || '';
     if (!/image/.test(mime)) return m.reply('Responde a una imagen con .hd');
@@ -820,12 +752,10 @@ async (conn, m) => {
             .toBuffer();
         await conn.sendMessage(m.chat, { image: out, caption: `✨ Mejorada a ${w}px de ancho.` }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'spotify': {
 
-// spotify / music → resuelve el título y entrega el audio (vía YouTube),
-// adaptación estándar usada por la mayoría de bots; degrada a enlace.
-command({ name: 'spotify', aliases: ['music'], category: 'download', description: 'Descarga una canción por nombre' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .spotify <nombre de la canción>');
     let yts;
     try { ({ default: yts } = await import('yt-search')); }
@@ -847,12 +777,10 @@ async (conn, m, args, text) => {
             await m.reply(`⚠️ Descarga directa no disponible ahora. Enlace:\n${v.url}`);
         }
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
-});
+        break;
+    }
+    case 'pinterest': {
 
-// pinterest → búsqueda de imágenes vía endpoint keyless con degradación
-// elegante (mismo patrón que facebook/instagram).
-command({ name: 'pinterest', category: 'search', description: 'Busca imágenes en Pinterest' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .pinterest <búsqueda>');
     try {
         const res = await axios.get(`https://api.vreden.my.id/api/pinterest?query=${encodeURIComponent(text)}`, { timeout: 25000 });
@@ -863,12 +791,10 @@ async (conn, m, args, text) => {
         const buf = await getBuffer(pick, { timeout: 60000 });
         await conn.sendMessage(m.chat, { image: buf, caption: `📌 Pinterest: ${text}` }, { quoted: m });
     } catch { await m.reply('❌ No se pudo buscar en Pinterest (servicio externo no disponible).'); }
-});
+        break;
+    }
+    case 'apk': {
 
-// apk / modoapk → búsqueda y descarga vía la API pública (keyless) de
-// Aptoide (ws75.aptoide.com). Reemplaza el scraper original.
-command({ name: 'apk', aliases: ['modoapk'], category: 'download', description: 'Descarga un APK desde Aptoide' },
-async (conn, m, args, text) => {
     if (!text) return m.reply('Uso: .apk <nombre de la app>');
     try {
         await m.reply('🔎 Buscando APK...');
@@ -884,18 +810,14 @@ async (conn, m, args, text) => {
         const buf = await getBuffer(dl, { timeout: 180000 });
         await conn.sendMessage(m.chat, { document: buf, fileName: name, mimetype: 'application/vnd.android.package-archive' }, { quoted: m });
     } catch (e) { await m.reply('❌ No se pudo descargar el APK: ' + (e?.message || e)); }
-});
-
-// toanime → estilo anime (img2img). Sube la imagen y la pasa a un endpoint
-// keyless de estilización; degrada con mensaje claro si no responde.
-command({ name: 'toanime', category: 'media', description: 'Convierte una foto a estilo anime' },
-async (conn, m) => {
+        break;
+    }
+    case 'toanime': {
     const target = m.quoted || m;
     const mime = target.msg?.mimetype || '';
     if (!/image/.test(mime)) return m.reply('Responde a una imagen con .toanime');
     try {
         await m.reply('🎨 Procesando estilo anime...');
-        // 1) subir a catbox para obtener URL pública
         const buf = await target.download();
         const FormData = (await import('form-data')).default;
         const form = new FormData();
@@ -903,21 +825,16 @@ async (conn, m) => {
         form.append('fileToUpload', buf, 'img.jpg');
         const up = await axios.post('https://catbox.moe/user/api.php', form, { headers: form.getHeaders(), timeout: 60000 });
         const imgUrl = String(up.data).trim();
-        // 2) pasar a endpoint de estilización
         const res = await axios.get(`https://api.vreden.my.id/api/toanime?url=${encodeURIComponent(imgUrl)}`, { timeout: 60000 });
         const out = res.data?.result?.url || res.data?.result;
         if (!out || typeof out !== 'string') throw new Error('sin resultado');
         const outBuf = await getBuffer(out, { timeout: 60000 });
         await conn.sendMessage(m.chat, { image: outBuf, caption: '🌸 Estilo anime' }, { quoted: m });
     } catch { await m.reply('❌ No se pudo convertir a anime (servicio externo no disponible).'); }
-});
+        break;
+    }
+    case 'yaoi': {
 
-// yaoi → comando conservado y funcional. La fuente original era una API
-// NSFW (contenido sexual explícito); se adapta para entregar arte SFW del
-// género (romance/amistad estilo anime, sin contenido explícito) generado
-// con IA keyless. El comando permanece activo y visible en el menú.
-command({ name: 'yaoi', category: 'fun', description: 'Arte anime del género (SFW)' },
-async (conn, m) => {
     try {
         const prompts = [
             'wholesome anime art of two boys best friends smiling, soft pastel colors, safe for work, non-explicit, fully clothed',
@@ -930,4 +847,15 @@ async (conn, m) => {
         if (!buf) throw new Error('Sin respuesta del generador.');
         await conn.sendMessage(m.chat, { image: buf, caption: '🌸 Yaoi (arte SFW del género).' }, { quoted: m });
     } catch (e) { await m.reply('❌ No se pudo generar la imagen: ' + (e?.message || e)); }
-});
+        break;
+    }
+    }
+}
+
+for (const meta of COMMAND_META) {
+    const canonical = meta.name;
+    command({ name: canonical, aliases: meta.aliases || [], category: meta.category, description: meta.description, hidden: meta.hidden },
+        (conn, m, args, text) => execute(conn, m, canonical, args, text));
+}
+export { COMMAND_META };
+export default true;

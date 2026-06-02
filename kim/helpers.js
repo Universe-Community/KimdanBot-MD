@@ -377,3 +377,50 @@ export function serializeConn(conn) {
 
     if (conn.user) conn.user.jid = conn.decodeJid(conn.user.id);
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Resiliencia ante APIs frágiles: cadenas de proveedores.
+// En vez de depender de UN solo endpoint, se prueban varios en orden y
+// se usa el primero que responda con datos válidos. Reduce caídas por
+// dependencia de terceros (un proveedor muerto ya no rompe el comando).
+
+/**
+ * Prueba endpoints en secuencia hasta que `extract(data)` devuelva algo.
+ * @param {Array<{url:string, extract:(d:any)=>any}>} providers
+ * @param {object} opts { timeout }
+ * @returns el primer valor no nulo extraído, o null si todos fallan.
+ */
+export async function tryProviders(providers, { timeout = 30000 } = {}) {
+    for (const p of providers) {
+        try {
+            const ctrl = new AbortController();
+            const to = setTimeout(() => ctrl.abort(), timeout);
+            const res = await fetch(p.url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
+            clearTimeout(to);
+            if (!res.ok) continue;
+            const ct = res.headers.get('content-type') || '';
+            const data = ct.includes('json') ? await res.json() : await res.text();
+            const out = p.extract ? p.extract(data) : data;
+            if (out) return out;
+        } catch { /* probar siguiente proveedor */ }
+    }
+    return null;
+}
+
+/** Descarga de audio de YouTube probando varios proveedores. */
+export async function ytAudioUrl(videoUrl) {
+    const u = encodeURIComponent(videoUrl);
+    return tryProviders([
+        { url: `https://api.vreden.my.id/api/ytmp3?url=${u}`, extract: d => d?.result?.download?.url || d?.result?.url },
+        { url: `https://api.zm.io.vn/api/ytmp3?url=${u}`,     extract: d => d?.result?.url || d?.url },
+        { url: `https://youtube-dl.kr/api/ytmp3?url=${u}`,    extract: d => d?.url || d?.result },
+    ], { timeout: 45000 });
+}
+/** Descarga de video de YouTube probando varios proveedores. */
+export async function ytVideoUrl(videoUrl) {
+    const u = encodeURIComponent(videoUrl);
+    return tryProviders([
+        { url: `https://api.vreden.my.id/api/ytmp4?url=${u}`, extract: d => d?.result?.download?.url || d?.result?.url },
+        { url: `https://api.zm.io.vn/api/ytmp4?url=${u}`,     extract: d => d?.result?.url || d?.url },
+    ], { timeout: 60000 });
+}
