@@ -155,7 +155,7 @@ const COMMAND_META = [
     { names: ['anuncios', 'announces', 'avisos'], category: 'config', description: 'Configura anuncios automáticos' },
 
     // ─── GROUP ───
-    { names: ['kick', 'echar', 'sacar', 'ban'], category: 'group', description: 'Expulsa a un usuario' },
+    { names: ['kick', 'echar', 'sacar', 'ban', 'remove'], category: 'group', description: 'Expulsa a un usuario (responde o etiqueta)' },
     { names: ['add', 'agregar', 'invitar', 'añadir'], category: 'group', description: 'Agrega un número al grupo' },
     { names: ['promote', 'daradmin'], category: 'group', description: 'Da admin a un usuario' },
     { names: ['demote', 'quitaradmin', 'quitar'], category: 'group', description: 'Quita admin a un usuario' },
@@ -910,13 +910,35 @@ export async function execute(conn, m, rawCommand, args, text) {
 
             case 'kick': {
                 if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
-                const t = resolveTarget(m, text);
-                if (!t) return m.reply('Menciona o cita al usuario.');
-                if (m.groupAdmins?.includes(t)) return m.reply('No puedo expulsar a un admin.');
+                let t = resolveTarget(m, text);
+                if (!t) return m.reply('👉 Responde al mensaje del usuario o etiquétalo: .kick @usuario');
+                // Resolver el target a la forma EXACTA del participante en la
+                // metadata (en v7 el grupo puede operar en LID). Sin esto,
+                // groupParticipantsUpdate puede fallar silenciosamente.
+                let canon = t;
+                try { const { canonicalGroupJid } = await import('./announcements.js'); canon = canonicalGroupJid(t, m.groupMetadata) || t; } catch { /* */ }
+                // No expulsar a admins (comparación LID-aware contra el adminSet).
+                const adminNums = new Set((m.groupAdmins || []).map(a => String(a).split('@')[0]));
+                if (adminNums.has(String(canon).split('@')[0]) || adminNums.has(String(t).split('@')[0])) {
+                    return m.reply('🛡️ No puedo expulsar a un administrador.');
+                }
+                // No expulsarse a sí mismo (el bot).
+                const botNum = String(this?.user?.id || conn.user?.id || '').split('@')[0];
+                if (String(canon).split('@')[0] === botNum) return m.reply('😅 No puedo expulsarme a mí mismo.');
                 try {
-                    await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
-                    await m.reply(`👋 @${t.split('@')[0]} expulsado.`, null, { mentions: [t] });
-                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                    const res = await conn.groupParticipantsUpdate(m.chat, [canon], 'remove');
+                    const ok = Array.isArray(res) ? (res[0]?.status === '200' || res[0]?.status === 200) : true;
+                    if (ok) {
+                        // Invalida la metadata para que el siguiente comando vea la lista actualizada.
+                        this?._invalidateGroup?.(m.chat);
+                        await m.reply(`👋 @${String(canon).split('@')[0]} fue expulsado del grupo.`, null, { mentions: [canon] });
+                    } else {
+                        const code = res?.[0]?.status;
+                        await m.reply(code === '404'
+                            ? '⚠️ Ese usuario ya no está en el grupo.'
+                            : `❌ No se pudo expulsar (código ${code || 'desconocido'}). Verifica que sea admin del grupo.`);
+                    }
+                } catch (e) { await m.reply('❌ Error al expulsar: ' + (e?.message || e)); }
                 break;
             }
 

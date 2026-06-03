@@ -89,8 +89,9 @@ const COMMAND_META = [
     { name: 'leave', aliases: ['salte'], category: 'owner', description: 'El bot sale del grupo' },
     { name: 'editinfo', aliases: ['editarinfo'], category: 'group', description: 'Bloquea/desbloquea edición de info del grupo' },
     { name: 'totag', category: 'group', description: 'Reenvía el mensaje citado etiquetando a todos' },
-    { name: 'aprobar', aliases: ['prueba'], category: 'group', description: 'Aprueba solicitudes de ingreso pendientes' },
-    { name: 'rechazar', aliases: ['prueba2'], category: 'group', description: 'Rechaza solicitudes de ingreso pendientes' },
+    { name: 'aprobar', aliases: ['approve', 'aceptar'], category: 'group', description: 'Aprueba solicitudes (respeta el límite del grupo)' },
+    { name: 'aprobarall', aliases: ['approveall', 'aceptartodo'], category: 'group', description: 'Aprueba todas las solicitudes que quepan' },
+    { name: 'rechazar', aliases: ['reject', 'denegar'], category: 'group', description: 'Rechaza solicitudes de ingreso pendientes' },
     { name: 'allmessage', category: 'config', description: 'Activa/desactiva bienvenida+despedida+avisos' },
     { name: 'autolevel', category: 'config', description: 'Auto-subida de nivel del grupo' },
     { name: 'buy', aliases: ['buyall'], category: 'rpg', description: 'Compra diamantes con EXP (.buy <n> | .buyall)' },
@@ -301,10 +302,69 @@ export async function execute(conn, m, cmd, args, text) {
     if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
     try {
         const reqs = await conn.groupRequestParticipantsList(m.chat);
-        if (!reqs?.length) return m.reply('No hay solicitudes pendientes.');
-        const jids = reqs.map(r => r.jid);
-        await conn.groupRequestParticipantsUpdate(m.chat, jids, 'approve');
-        await m.reply(`✅ Aprobadas ${jids.length} solicitud(es).`);
+        if (!reqs?.length) return m.reply('📭 No hay solicitudes pendientes.');
+        // Límite real de WhatsApp por grupo (configurable por si cambia).
+        const WA_LIMIT = parseInt(global.groupMemberLimit) || 1024;
+        const meta = m.groupMetadata || await conn.groupMetadata(m.chat).catch(() => null);
+        const current = meta?.participants?.length || 0;
+        const free = Math.max(0, WA_LIMIT - current);
+        // Si el admin pasó un número, respeta ese tope también (.aprobar 10).
+        const askedRaw = parseInt(text);
+        const asked = Number.isFinite(askedRaw) && askedRaw > 0 ? askedRaw : reqs.length;
+        const toApprove = Math.min(free, asked, reqs.length);
+
+        if (toApprove <= 0) {
+            return m.reply(`⚠️ El grupo está lleno (${current}/${WA_LIMIT}).\nℹ️ No se puede aprobar ninguna solicitud. Hay ${reqs.length} pendiente(s).`);
+        }
+
+        const jids = reqs.slice(0, toApprove).map(r => r.jid);
+        // Aprobar en lotes pequeños para no saturar ni que un fallo cancele todo.
+        let approved = 0; const failed = [];
+        const CHUNK = 5;
+        for (let i = 0; i < jids.length; i += CHUNK) {
+            const slice = jids.slice(i, i + CHUNK);
+            try {
+                const res = await conn.groupRequestParticipantsUpdate(m.chat, slice, 'approve');
+                for (const r of (Array.isArray(res) ? res : [])) {
+                    if (r?.status === '200' || r?.status === 200) approved++;
+                    else failed.push(r?.jid);
+                }
+                // Si la API no devuelve status detallado, asumimos éxito del lote.
+                if (!Array.isArray(res)) approved += slice.length;
+            } catch (e) { failed.push(...slice); }
+        }
+        const pending = reqs.length - approved;
+        let msg = `✅ Solicitudes aprobadas: ${approved}`;
+        if (pending > 0) msg += `\n⚠️ Solicitudes pendientes: ${pending}`;
+        if (current + approved >= WA_LIMIT && pending > 0) {
+            msg += `\nℹ️ El grupo alcanzó el límite permitido por WhatsApp (${WA_LIMIT}).`;
+        }
+        if (failed.length) msg += `\n❌ Fallaron ${failed.length} (reintenta más tarde).`;
+        await m.reply(msg);
+    } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+        break;
+    }
+    case 'aprobarall': {
+
+    if (!needGroupAdmin(m) || !needBotAdmin(m)) return;
+    // Igual que aprobar pero explícitamente "todas las que quepan".
+    try {
+        const reqs = await conn.groupRequestParticipantsList(m.chat);
+        if (!reqs?.length) return m.reply('📭 No hay solicitudes pendientes.');
+        const WA_LIMIT = parseInt(global.groupMemberLimit) || 1024;
+        const meta = m.groupMetadata || await conn.groupMetadata(m.chat).catch(() => null);
+        const current = meta?.participants?.length || 0;
+        const free = Math.max(0, WA_LIMIT - current);
+        const toApprove = Math.min(free, reqs.length);
+        if (toApprove <= 0) return m.reply(`⚠️ El grupo está lleno (${current}/${WA_LIMIT}). ${reqs.length} solicitud(es) en espera.`);
+        const jids = reqs.slice(0, toApprove).map(r => r.jid);
+        let approved = 0;
+        const CHUNK = 5;
+        for (let i = 0; i < jids.length; i += CHUNK) {
+            try { await conn.groupRequestParticipantsUpdate(m.chat, jids.slice(i, i + CHUNK), 'approve'); approved += jids.slice(i, i + CHUNK).length; } catch { /* */ }
+        }
+        const pending = reqs.length - approved;
+        await m.reply(`✅ Solicitudes aprobadas: ${approved}${pending > 0 ? `\n⚠️ Pendientes: ${pending}\nℹ️ Límite de WhatsApp (${WA_LIMIT}) alcanzado.` : ''}`);
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
         break;
     }
@@ -315,8 +375,11 @@ export async function execute(conn, m, cmd, args, text) {
         const reqs = await conn.groupRequestParticipantsList(m.chat);
         if (!reqs?.length) return m.reply('No hay solicitudes pendientes.');
         const jids = reqs.map(r => r.jid);
-        await conn.groupRequestParticipantsUpdate(m.chat, jids, 'reject');
-        await m.reply(`🚫 Rechazadas ${jids.length} solicitud(es).`);
+        let rejected = 0; const CHUNK = 5;
+        for (let i = 0; i < jids.length; i += CHUNK) {
+            try { await conn.groupRequestParticipantsUpdate(m.chat, jids.slice(i, i + CHUNK), 'reject'); rejected += jids.slice(i, i + CHUNK).length; } catch { /* */ }
+        }
+        await m.reply(`🚫 Rechazadas ${rejected} solicitud(es).`);
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
         break;
     }

@@ -157,7 +157,7 @@ async function resolveJidForMention(conn, jid) {
  * devuelve el jid recibido tal cual (el del evento, que es coherente consigo
  * mismo para texto+mentions).
  */
-function canonicalGroupJid(jid, meta) {
+export function canonicalGroupJid(jid, meta) {
     if (!jid) return jid;
     const parts = meta?.participants;
     if (!Array.isArray(parts)) return jid;
@@ -299,6 +299,82 @@ async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = '
 
 // ─── group-participants.update ──────────────────────────────────────
 
+// Cola de bienvenidas por grupo para agrupar entradas masivas.
+//   chatJid → { members:Set<jid>, timer, conn, meta, subject, botName }
+const _welcomeQueue = new Map();
+const WELCOME_WINDOW_MS = parseInt(process.env.WELCOME_WINDOW_MS) || 60000; // ventana de agrupación: 60s
+
+function queueWelcome(conn, chatJid, newcomers, meta, subject, botName) {
+    let q = _welcomeQueue.get(chatJid);
+    if (!q) {
+        q = { members: new Set(), conn, meta, subject, botName, timer: null };
+        _welcomeQueue.set(chatJid, q);
+    }
+    // Mantener datos más recientes (metadata puede haber cambiado).
+    q.conn = conn; q.meta = meta || q.meta; q.subject = subject || q.subject; q.botName = botName || q.botName;
+    for (const j of newcomers) q.members.add(j);
+    // Reiniciar la ventana: cada nueva entrada extiende el agrupamiento.
+    if (q.timer) clearTimeout(q.timer);
+    q.timer = setTimeout(() => { flushWelcome(chatJid).catch(e => console.error('[ann] flushWelcome:', e?.message || e)); }, WELCOME_WINDOW_MS);
+}
+
+async function flushWelcome(chatJid) {
+    const q = _welcomeQueue.get(chatJid);
+    if (!q) return;
+    _welcomeQueue.delete(chatJid);
+    if (q.timer) clearTimeout(q.timer);
+
+    const { conn, subject, botName } = q;
+    let meta = q.meta;
+    // Refrescar metadata para mencionar con el JID canónico correcto.
+    try { meta = await conn.groupMetadata(chatJid); } catch { /* usa la previa */ }
+
+    const jids = [...q.members];
+    if (!jids.length) return;
+
+    // UNA persona → bienvenida individual (con su foto, como antes).
+    if (jids.length === 1) {
+        const num = jids[0];
+        const canon = canonicalGroupJid(num, meta);
+        const cleanNum = String(canon || num).split('@')[0];
+        const name = getDisplayName(num, conn, meta);
+        const tag = name ? `*${name}* @${cleanNum}` : `@${cleanNum}`;
+        const ppBuf = await getUserPicBuffer(conn, num);
+        const text =
+`🌸 *¡Bienvenida(o) ${tag}!* 💞
+
+💐 Te uniste al grupo *${subject}*.
+
+🍓 Soy *${botName}*, el bot del grupo 💜
+
+📰 Por favor lee la *descripción del grupo* y disfruta tu estancia.
+✨(♡´▽\`♡)✨`;
+        await sendAnnouncement(conn, chatJid, text, [canon || num], ppBuf, 'welcome');
+        return;
+    }
+
+    // VARIAS personas → una sola bienvenida agrupada con todas las menciones.
+    const mentions = [];
+    const lines = [];
+    for (const num of jids) {
+        const canon = canonicalGroupJid(num, meta) || num;
+        mentions.push(canon);
+        const cleanNum = String(canon).split('@')[0];
+        const name = getDisplayName(num, conn, meta);
+        lines.push(name ? `👤 *${name}* @${cleanNum}` : `👤 @${cleanNum}`);
+    }
+    const text =
+`🎉 *¡Bienvenidos al grupo ${subject}!* 💞
+
+${lines.join('\n')}
+
+🍓 Somos ${jids.length} nuevas(os) integrantes 💜
+📰 Lean la *descripción del grupo* y disfruten su estancia.
+✨ Esperamos que la pasen genial 💞`;
+    // Sin foto individual (son varios): mensaje de texto con todas las menciones.
+    await sendAnnouncement(conn, chatJid, text, mentions, null, 'welcome');
+}
+
 async function onParticipantsUpdate(conn, event) {
     const { id: chatJid, participants, action, author } = event;
 
@@ -330,6 +406,18 @@ async function onParticipantsUpdate(conn, event) {
 
     const botJids = botIdentities(conn);
     const botName = global.botname || 'KimdanBot-MD';
+
+    // ── BIENVENIDAS MASIVAS: agrupar entradas en una ventana de 60s ──
+    // Si varios usuarios entran en el mismo minuto, se acumulan y se envía
+    // UNA sola bienvenida con todas las menciones (evita spam). Si entra una
+    // sola persona y nadie más en la ventana, sale la bienvenida individual.
+    if (action === 'add' && shouldAnnounce(chatCfg, 'notifyMembers', 'welcome')) {
+        const newcomers = participants
+            .map(p => (typeof p === 'string' ? p : (p?.id ?? p?.jid ?? '')))
+            .filter(j => j && !botJids.has(j));
+        if (newcomers.length) queueWelcome(conn, chatJid, newcomers, meta, subject, botName);
+        return; // el envío lo hace flushWelcome al cerrar la ventana
+    }
 
     for (const participant of participants) {
         const num = typeof participant === 'string'

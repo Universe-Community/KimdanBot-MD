@@ -58,6 +58,7 @@ export class Handler {
         );
 
         this.groupMetaCache = new Map();
+        this._adminSetCache = new Map();   // jid → { set, sig, ts } (variantes LID de admins)
         this.errorCooldown = new Map();
         this._botJid = null;
         this._botLid = null;
@@ -194,6 +195,27 @@ export class Handler {
         return set;
     }
 
+    /**
+     * adminSet cacheado por grupo. Las variantes LID de los admins cambian
+     * muy poco (solo al promover/degradar), así que recalcularlas en cada
+     * comando es desperdicio. Se invalida junto con la metadata del grupo.
+     */
+    async _getAdminVariantSet(jid, admins) {
+        const now = Date.now();
+        const cached = this._adminSetCache.get(jid);
+        const sig = (admins || []).join(',');
+        if (cached && cached.sig === sig && now - cached.ts < GROUP_META_TTL_MS) return cached.set;
+        const set = await this._buildAdminVariantSet(admins);
+        this._adminSetCache.set(jid, { set, sig, ts: now });
+        if (this._adminSetCache.size > 300) {
+            // poda simple: borra entradas vencidas
+            for (const [k, v] of this._adminSetCache) {
+                if (now - v.ts > GROUP_META_TTL_MS) this._adminSetCache.delete(k);
+            }
+        }
+        return set;
+    }
+
     /** Une las variantes (PN + LID) del sender en un Set. */
     async _buildSenderVariantSet(m) {
         const set = new Set();
@@ -211,11 +233,17 @@ export class Handler {
         try {
             const data = await this.conn.groupMetadata(jid);
             this.groupMetaCache.set(jid, { data, ts: now });
+            // Tope de memoria: si crece demasiado, poda entradas vencidas.
+            if (this.groupMetaCache.size > 300) {
+                for (const [k, v] of this.groupMetaCache) {
+                    if (now - v.ts > GROUP_META_TTL_MS) this.groupMetaCache.delete(k);
+                }
+            }
             return data;
         } catch { return null; }
     }
 
-    _invalidateGroup(jid) { this.groupMetaCache.delete(jid); }
+    _invalidateGroup(jid) { this.groupMetaCache.delete(jid); this._adminSetCache.delete(jid); }
 
     // ═══════════════════════════════════════════════════════════════
     // connection.update
@@ -271,8 +299,15 @@ export class Handler {
         const messages = update?.messages || [];
         if (!messages.length) return;
 
-        // Procesa el batch en paralelo. Errores quedan aislados por mensaje.
-        await Promise.allSettled(messages.map(raw => this._handleOne(raw)));
+        // Procesa con CONCURRENCIA ACOTADA. Un upsert puede traer cientos de
+        // mensajes; lanzarlos todos a la vez (Promise.allSettled puro)
+        // inundaba el event loop en grupos muy activos. Procesamos en lotes
+        // de tamaño fijo para mantener el bot responsivo.
+        const LIMIT = 8;
+        for (let i = 0; i < messages.length; i += LIMIT) {
+            const slice = messages.slice(i, i + LIMIT);
+            await Promise.allSettled(slice.map(raw => this._handleOne(raw)));
+        }
     }
 
     async _handleOne(raw) {
@@ -307,9 +342,14 @@ export class Handler {
                 ? body.slice(usedPrefix.length).trim().split(/\s+/).slice(1)
                 : [];
             m.text2 = m.args.join(' ');
-            m.isOwner = (await this._isOwnerAsync(m.sender, m.senderAlt)) || m.fromMe;
-            // VIP: lista estática de settings.js (global.vip) O flag en la DB
-            // (otorgado con .setvip). El owner siempre cuenta como VIP.
+            // isOwner: el chequeo async (resuelve LID vía lidMapping) solo se
+            // necesita para comandos y atajos de owner. Para mensajes normales
+            // usamos el chequeo síncrono (sin await), que es suficiente y barato.
+            const needsOwnerCheck = m._isCmd || (typeof body === 'string' && /^(=>|>|\$)/.test(body));
+            m.isOwner = m.fromMe
+                || (needsOwnerCheck ? await this._isOwnerAsync(m.sender, m.senderAlt)
+                                    : this._isOwner(m.sender, m.senderAlt));
+            // VIP: lista estática de settings.js (global.vip) O flag en la DB.
             {
                 let dbVip = false;
                 try {
@@ -319,55 +359,58 @@ export class Handler {
                 m.isVip = m.isOwner || this._isVipGlobal(m.sender, m.senderAlt) || dbVip;
             }
 
-            // Metadata de grupo (cacheada) + admin checks LID-AWARE
+            // Metadata de grupo (cacheada) + admin checks LID-AWARE.
+            //
+            // CAUSA RAÍZ del "deja de responder en grupos activos": este
+            // bloque hacía decenas de `await lidMapping.getPNForLID(...)` por
+            // CADA mensaje (incluidos los que no son comandos). En grupos
+            // grandes y activos eso saturaba el event loop con microtareas y
+            // los mensajes se encolaban más rápido de lo que se procesaban.
+            //
+            // FIX: el cálculo costoso de permisos solo se hace cuando hay un
+            // comando (m._isCmd). Para mensajes normales basta con adjuntar la
+            // metadata cacheada (barata) y dejar el conteo de actividad.
             if (m.isGroup) {
                 const meta = await this._getGroupMetadata(remoteJid);
                 if (meta) {
-                    // getGroupAdmins ahora recoge id + lid + phoneNumber de
-                    // cada admin (todas las formas conocidas).
-                    const admins = getGroupAdmins(meta.participants || []);
-
-                    // Expandimos admins y sender con signalRepository.lidMapping
-                    // para que la comparación LID↔PN funcione aunque vengan
-                    // los dos lados en formatos distintos.
-                    const adminSet     = await this._buildAdminVariantSet(admins);
-                    const senderSet    = await this._buildSenderVariantSet(m);
-
-                    // Intersección: ¿alguna variante del sender está entre los admins?
-                    let isSender = false;
-                    for (const s of senderSet) {
-                        if (adminSet.has(s)) { isSender = true; break; }
-                    }
-
-                    // Bot admin: también con expansión LID↔PN
-                    const botJid = this._getBotJid();
-                    const botLid = this._getBotLid();
-                    const botSet = new Set();
-                    for (const j of [botJid, botLid].filter(Boolean)) {
-                        const variants = await this._expandJidVariants(j);
-                        for (const v of variants) botSet.add(v);
-                    }
-                    let isBot = false;
-                    for (const b of botSet) {
-                        if (adminSet.has(b)) { isBot = true; break; }
-                    }
-
-                    m.isBotAdmin    = isBot;
-                    m.isSenderAdmin = isSender;
                     m.groupMetadata = meta;
                     m.participants  = meta.participants;
-                    m.groupAdmins   = admins;
                     m.groupName     = meta.subject;
 
-                    // Log diagnóstico: si los checks fallan, verás exactamente
-                    // qué hay en cada lado y por qué no coincide.
                     if (m._isCmd) {
+                        const admins = getGroupAdmins(meta.participants || []);
+                        // adminSet cacheado por grupo (las variantes LID de los
+                        // admins cambian poco; recalcular en cada comando es caro).
+                        const adminSet = await this._getAdminVariantSet(remoteJid, admins);
+                        const senderSet = await this._buildSenderVariantSet(m);
+
+                        let isSender = false;
+                        for (const s of senderSet) { if (adminSet.has(s)) { isSender = true; break; } }
+
+                        const botJid = this._getBotJid();
+                        const botLid = this._getBotLid();
+                        const botSet = new Set();
+                        for (const j of [botJid, botLid].filter(Boolean)) {
+                            const variants = await this._expandJidVariants(j);
+                            for (const v of variants) botSet.add(v);
+                        }
+                        let isBot = false;
+                        for (const b of botSet) { if (adminSet.has(b)) { isBot = true; break; } }
+
+                        m.isBotAdmin    = isBot;
+                        m.isSenderAdmin = isSender;
+                        m.groupAdmins   = admins;
+
                         console.log(chalk.gray(
                             `[perm] sender=[${[...senderSet].join(' | ')}] ` +
                             `admins=[${[...adminSet].slice(0, 4).join(' | ')}${adminSet.size > 4 ? ' …' : ''}] ` +
                             `bot=[${[...botSet].join(' | ')}] ` +
                             `→ isSenderAdmin:${isSender} isBotAdmin:${isBot} isOwner:${m.isOwner}`
                         ));
+                    } else {
+                        // Mensaje normal (no comando): admins en forma simple,
+                        // sin expansión LID (no se necesita y sería caro).
+                        m.groupAdmins = getGroupAdmins(meta.participants || []);
                     }
                 }
             }

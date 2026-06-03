@@ -8,6 +8,7 @@ const DEFAULT_USER = () => ({
     activity: {},                 // JX (money) + HG (corazones) + AP (affinity) + actividad por grupo
     lastclaim: 0, lastdaily: 0, lastwork: 0, lastmine: 0,
     lastcrime: 0, lastslut: 0, lastrob: 0, lastroulette: 0, lastcofre: 0,
+    lastinvest: 0, lastinterest: 0, lastap: 0, bankLog: [],
     registered: false, name: '', age: 0, regTime: -1,
     // Gacha BL/Yaoi
     characters: [], favorite: null, lastroll: 0, lastgachaclaim: 0,

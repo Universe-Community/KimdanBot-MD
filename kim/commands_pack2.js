@@ -20,6 +20,13 @@ const numArg = (args) => parseInt((args || []).find(a => /^\d+$/.test(a)));
 const fmtDur = (d) => { const s = Math.ceil(d / 1000); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return [h && `${h}h`, m && `${m}m`, `${x}s`].filter(Boolean).join(' '); };
 const cd = (u, f, p) => { const left = p - (Date.now() - (u[f] || 0)); return left > 0 ? left : 0; };
 
+// Registra un movimiento bancario (acotado a los últimos 30 para no crecer).
+function pushBankLog(u, type, amt) {
+    u.bankLog ||= [];
+    u.bankLog.push({ type, amt, ts: Date.now() });
+    if (u.bankLog.length > 30) u.bankLog = u.bankLog.slice(-30);
+}
+
 const COMMAND_META = [
     // —— GRUPOS ——
     { names: ['tag', 'tagsay'], category: 'group', description: 'Menciona a todos con tu mensaje' },
@@ -32,7 +39,14 @@ const COMMAND_META = [
     { names: ['slut'], category: 'rpg', hidden: true, description: 'Trabajo nocturno arriesgado' },
     { names: ['deposit', 'dep', 'depositar', 'd'], category: 'rpg', description: 'Depositar JX al banco' },
     { names: ['withdraw', 'with', 'retirar'], category: 'rpg', description: 'Retirar JX del banco' },
-    { names: ['givecoins', 'pay', 'coinsgive'], category: 'rpg', description: 'Dar JX a alguien' },
+    { names: ['bank', 'banco'], category: 'rpg', description: 'Consulta tu banco' },
+    { names: ['banklog', 'historial'], category: 'rpg', description: 'Historial de movimientos bancarios' },
+    { names: ['invest', 'invertir'], category: 'rpg', description: 'Invierte JX (riesgo/recompensa)' },
+    { names: ['interest', 'interes'], category: 'rpg', description: 'Cobra el interés diario del banco (2%)' },
+    { names: ['topmoney', 'topcartera'], category: 'rpg', description: 'Ranking por JX en cartera' },
+    { names: ['topbank', 'topbanco'], category: 'rpg', description: 'Ranking por JX en banco' },
+    { names: ['rich', 'toprich', 'ricos'], category: 'rpg', description: 'Ranking por patrimonio total' },
+    { names: ['givecoins', 'pay', 'transfer', 'coinsgive'], category: 'rpg', description: 'Transferir JX a alguien' },
     { names: ['steal', 'robar', 'rob'], category: 'rpg', description: 'Intentar robar JX' },
     { names: ['coinflip', 'flip', 'cf'], category: 'rpg', description: 'Apuesta a cara o cruz' },
     { names: ['roulette', 'rt'], category: 'rpg', description: 'Ruleta rojo/negro' },
@@ -43,8 +57,8 @@ const COMMAND_META = [
     { names: ['affinityboard', 'aptop', 'topafinidad'], category: 'rpg', description: 'Ranking de afinidad' },
     // —— ACTIVIDAD ——
     { names: ['msgcount', 'contar', 'count', 'messages', 'mensajes'], category: 'group', description: 'Conteo de mensajes de un usuario (.contar [@user] o respondiendo)' },
-    { names: ['topcount', 'topmessages', 'topmsgcount', 'topmensajes'], category: 'group', description: 'Top de usuarios más activos' },
-    { names: ['topinactive', 'topinactivos', 'topinactiveusers'], category: 'group', description: 'Top de usuarios inactivos' },
+    { names: ['topcount', 'topactivos', 'topmessages', 'topmsgcount', 'topmensajes'], category: 'group', description: 'Top de usuarios más activos (paginado)' },
+    { names: ['topinactive', 'topinactivo', 'topinactivos', 'topinactiveusers'], category: 'group', description: 'Top de usuarios inactivos (50/página)' },
 ];
 
 export async function execute(conn, m, cmd, args, text) {
@@ -129,28 +143,102 @@ export async function execute(conn, m, cmd, args, text) {
     }
     case 'deposit': {
         const u = getUser(m.sender);
-        let amt = /all|todo/i.test(text || '') ? u.money : parseInt(text);
-        if (!amt || amt <= 0) return m.reply('Uso: .deposit <cantidad|all>');
+        const isAll = /^(all|todo)$/i.test((text || '').trim());
+        let amt = isAll ? u.money : parseInt(text);
+        // Anti-exploit: entero finito, positivo, sin overflow.
+        if (!Number.isSafeInteger(amt) || amt <= 0) return m.reply('Uso: .deposit <cantidad|all> (cantidad válida y positiva).');
         amt = Math.min(amt, u.money); if (amt <= 0) return m.reply('No tienes JX en la cartera.');
-        u.money -= amt; u.bank += amt; db.markDirty();
-        await m.reply(`🏦 Depositaste ${fmtMoney(amt)}. Banco: ${fmtMoney(u.bank)}.`);
+        u.money -= amt; u.bank = (u.bank || 0) + amt;
+        pushBankLog(u, 'depósito', amt); db.markDirty();
+        await m.reply(box('🏦 DEPÓSITO', [`+${fmtMoney(amt)} al banco`, `💜 Cartera: ${fmtMoney(u.money)}`, `🏦 Banco: ${fmtMoney(u.bank)}`]));
         break;
     }
     case 'withdraw': {
         const u = getUser(m.sender);
-        let amt = /all|todo/i.test(text || '') ? u.bank : parseInt(text);
-        if (!amt || amt <= 0) return m.reply('Uso: .withdraw <cantidad|all>');
-        amt = Math.min(amt, u.bank); if (amt <= 0) return m.reply('No tienes JX en el banco.');
-        u.bank -= amt; u.money += amt; db.markDirty();
-        await m.reply(`💸 Retiraste ${fmtMoney(amt)}. Cartera: ${fmtMoney(u.money)}.`);
+        const isAll = /^(all|todo)$/i.test((text || '').trim());
+        let amt = isAll ? (u.bank || 0) : parseInt(text);
+        if (!Number.isSafeInteger(amt) || amt <= 0) return m.reply('Uso: .withdraw <cantidad|all> (cantidad válida y positiva).');
+        amt = Math.min(amt, u.bank || 0); if (amt <= 0) return m.reply('No tienes JX en el banco.');
+        u.bank -= amt; u.money += amt;
+        pushBankLog(u, 'retiro', amt); db.markDirty();
+        await m.reply(box('💸 RETIRO', [`-${fmtMoney(amt)} del banco`, `💜 Cartera: ${fmtMoney(u.money)}`, `🏦 Banco: ${fmtMoney(u.bank)}`]));
+        break;
+    }
+    case 'bank': {
+        const u = getUser(m.sender);
+        await conn.sendMessage(m.chat, { text: box('🏦 BANCO JINX', [
+            `👤 @${m.sender.split('@')[0]}`,
+            `🏦 Banco: ${fmtMoney(u.bank)}`,
+            `💜 Cartera: ${fmtMoney(u.money)}`,
+            `Σ Patrimonio: ${fmtMoney((u.money||0)+(u.bank||0))}`,
+            `📜 Movimientos: ${(u.bankLog||[]).length}`,
+        ]), mentions: [m.sender] }, { quoted: m });
+        break;
+    }
+    case 'banklog': {
+        const u = getUser(m.sender);
+        const log = (u.bankLog || []).slice(-10).reverse();
+        if (!log.length) return m.reply('📭 Sin movimientos bancarios todavía.');
+        await m.reply(box('📜 HISTORIAL BANCARIO', log.map(e =>
+            `${e.type === 'depósito' ? '⬇️' : '⬆️'} ${e.type} · ${fmtMoney(e.amt)} · ${new Date(e.ts).toLocaleDateString('es')}`)));
+        break;
+    }
+    case 'invest': {
+        // Inversión simple: arriesga JX de cartera, retorno -50%…+80%, cooldown 2h.
+        const u = getUser(m.sender);
+        const amt = parseInt(text);
+        if (!Number.isSafeInteger(amt) || amt <= 0) return m.reply('Uso: .invest <cantidad>');
+        if ((u.money || 0) < amt) return m.reply('No tienes suficientes JX en la cartera.');
+        const left = cd(u, 'lastinvest', 7200000);
+        if (left) return m.reply(`📈 Tus fondos están invertidos. Espera ${fmtDur(left)}.`);
+        u.lastinvest = Date.now();
+        const factor = 0.5 + Math.random() * 1.3; // 0.5x – 1.8x
+        const result = Math.floor(amt * factor) - amt;
+        u.money = Math.max(0, u.money + result); db.markDirty();
+        await m.reply(box(result >= 0 ? '📈 INVERSIÓN EXITOSA' : '📉 INVERSIÓN CON PÉRDIDA', [
+            result >= 0 ? `Ganaste ${fmtMoney(result)}` : `Perdiste ${fmtMoney(-result)}`,
+            `💜 Cartera: ${fmtMoney(u.money)}`,
+        ]));
+        break;
+    }
+    case 'interest': {
+        // Interés diario del banco: 2% una vez al día.
+        const u = getUser(m.sender);
+        const left = cd(u, 'lastinterest', 86400000);
+        if (left) return m.reply(`🏦 Ya cobraste el interés de hoy. Vuelve en ${fmtDur(left)}.`);
+        if ((u.bank || 0) <= 0) return m.reply('No tienes saldo en el banco para generar interés.');
+        const gain = Math.floor(u.bank * 0.02);
+        u.bank += gain; u.lastinterest = Date.now();
+        pushBankLog(u, 'depósito', gain); db.markDirty();
+        await m.reply(box('🏦 INTERÉS DIARIO', [`+${fmtMoney(gain)} (2% del banco)`, `🏦 Banco: ${fmtMoney(u.bank)}`]));
+        break;
+    }
+    case 'topmoney': {
+        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.money || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        if (!e.length) return m.reply('Sin datos.');
+        await conn.sendMessage(m.chat, { text: box('💜 TOP CARTERA (JX)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
+        break;
+    }
+    case 'topbank': {
+        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.bank || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        if (!e.length) return m.reply('Sin datos bancarios.');
+        await conn.sendMessage(m.chat, { text: box('🏦 TOP BANCO (JX)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
+        break;
+    }
+    case 'rich': {
+        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: (u.money||0)+(u.bank||0) })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        if (!e.length) return m.reply('Sin datos.');
+        await conn.sendMessage(m.chat, { text: box('👑 TOP MÁS RICOS (patrimonio)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
         break;
     }
     case 'givecoins': {
         const t = target(m, text); if (!t) return m.reply('Uso: .pay @user <cantidad>');
-        const amt = numArg(args); if (!amt || amt <= 0) return m.reply('Indica una cantidad válida.');
-        const u = getUser(m.sender); if (u.money < amt) return m.reply('No tienes suficientes JX.');
-        const r = getUser(t); u.money -= amt; r.money += amt; db.markDirty();
-        await conn.sendMessage(m.chat, { text: `🎀 @${m.sender.split('@')[0]} le dio ${fmtMoney(amt)} a @${t.split('@')[0]}.`, mentions: [m.sender, t] }, { quoted: m });
+        if (t === m.sender) return m.reply('No puedes transferirte a ti mismo.');
+        const amt = numArg(args);
+        if (!Number.isSafeInteger(amt) || amt <= 0) return m.reply('Indica una cantidad válida y positiva.');
+        const u = getUser(m.sender); if ((u.money || 0) < amt) return m.reply('No tienes suficientes JX.');
+        const r = getUser(t); u.money -= amt; r.money = (r.money || 0) + amt; db.markDirty();
+        await conn.sendMessage(m.chat, { text: `🎀 @${m.sender.split('@')[0]} le transfirió ${fmtMoney(amt)} a @${t.split('@')[0]}.`, mentions: [m.sender, t] }, { quoted: m });
         break;
     }
     case 'steal': {
@@ -241,24 +329,44 @@ export async function execute(conn, m, cmd, args, text) {
     }
     case 'topcount': {
         if (!needGroup(m)) return;
-        const rows = Object.entries(db.data.users || {})
-            .map(([jid, u]) => ({ jid, n: u.activity?.[m.chat]?.count || 0 }))
-            .filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0, 15);
+        const PAGE = 50;
+        const page = Math.max(1, parseInt((args || [])[0]) || 1);
+        // Solo miembros reales del grupo, con su conteo en este chat.
+        const members = (m.participants || []).map(p => p.id).filter(Boolean);
+        const rows = members
+            .map(jid => ({ jid, n: getUser(jid).activity?.[m.chat]?.count || 0 }))
+            .filter(x => x.n > 0)
+            .sort((a, b) => b.n - a.n);
         if (!rows.length) return m.reply('Aún no hay actividad registrada en este grupo.');
-        await conn.sendMessage(m.chat, { text: box('🏆 TOP DE ACTIVIDAD',
-            rows.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${x.n} mensajes`)
-        ), mentions: rows.map(x=>x.jid) }, { quoted: m });
+        const pages = Math.ceil(rows.length / PAGE);
+        if (page > pages) return m.reply(`Solo hay ${pages} página(s). Usa .topactivos ${pages}.`);
+        const start = (page - 1) * PAGE;
+        const slice = rows.slice(start, start + PAGE);
+        await conn.sendMessage(m.chat, { text: box(`🏆 TOP DE ACTIVIDAD (${page}/${pages})`,
+            slice.map((x, i) => `${start + i + 1}. @${x.jid.split('@')[0]} → ${x.n} mensajes`)
+        ) + (pages > 1 ? `\n\n_Más: .topactivos ${page < pages ? page + 1 : 1}_` : ''),
+            mentions: slice.map(x => x.jid) }, { quoted: m });
         break;
     }
     case 'topinactive': {
         if (!needGroup(m)) return;
-        const members = (m.participants || []).map(p => p.id);
-        const rows = members.map(jid => { const a = getUser(jid).activity?.[m.chat]; return { jid, last: a?.last || 0, n: a?.count || 0 }; })
-            .sort((a,b)=> (a.n - b.n) || (a.last - b.last)).slice(0, 15);
-        if (!rows.length) return m.reply('No pude leer la actividad del grupo.');
-        await conn.sendMessage(m.chat, { text: box('😴 USUARIOS INACTIVOS',
-            rows.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${x.n} mensajes${x.last ? ` · hace ${fmtDur(Date.now()-x.last)}` : ' · sin actividad'}`)
-        ), mentions: rows.map(x=>x.jid) }, { quoted: m });
+        const PAGE = 50;
+        const page = Math.max(1, parseInt((args || [])[0]) || 1);
+        // Miembros reales del grupo, ordenados de MENOS a MÁS activos.
+        // No carga toda la DB: solo recorre los participantes del grupo.
+        const members = (m.participants || []).map(p => p.id).filter(Boolean);
+        if (!members.length) return m.reply('No pude leer los miembros del grupo.');
+        const rows = members
+            .map(jid => { const a = getUser(jid).activity?.[m.chat]; return { jid, n: a?.count || 0, last: a?.last || 0 }; })
+            .sort((a, b) => (a.n - b.n) || (a.last - b.last));
+        const pages = Math.ceil(rows.length / PAGE);
+        if (page > pages) return m.reply(`Solo hay ${pages} página(s) para ${rows.length} miembros. Usa .topinactivo ${pages}.`);
+        const start = (page - 1) * PAGE;
+        const slice = rows.slice(start, start + PAGE);
+        await conn.sendMessage(m.chat, { text: box(`😴 TOP INACTIVOS (${page}/${pages}) · ${rows.length} miembros`,
+            slice.map((x, i) => `${start + i + 1}. @${x.jid.split('@')[0]} → ${x.n} mensajes`)
+        ) + (pages > 1 ? `\n\n_Páginas: .topinactivo 1…${pages}_` : ''),
+            mentions: slice.map(x => x.jid) }, { quoted: m });
         break;
     }
 

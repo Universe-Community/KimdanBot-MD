@@ -9,6 +9,25 @@ const ANTIFAKE_PREFIXES = ['1', '994', '48', '43', '40', '41', '49'];
 const ANTIARABE_PREFIXES = ['212', '265', '234', '258', '263', '967', '20', '92', '91'];
 const SPAM_WINDOW_MS = 5000;
 
+// Resuelve el sender a la forma EXACTA del participante en la metadata del
+// grupo (en v7 puede ser LID). Sin esto, groupParticipantsUpdate('remove')
+// puede fallar silenciosamente y el anti-* "no expulsa".
+function canonSender(m) {
+    const meta = m.groupMetadata;
+    const parts = meta?.participants;
+    const forms = new Set([m.sender, m.senderAlt].filter(Boolean));
+    // añade la forma cruzada PN<->LID
+    for (const j of [...forms]) {
+        if (j.endsWith('@lid')) forms.add(j.replace('@lid', '@s.whatsapp.net'));
+        else if (j.endsWith('@s.whatsapp.net')) forms.add(j.replace('@s.whatsapp.net', '@lid'));
+    }
+    if (Array.isArray(parts)) {
+        const p = parts.find(p => forms.has(p?.id) || forms.has(p?.jid) || forms.has(p?.lid) || forms.has(p?.phoneNumber));
+        if (p?.id) return p.id;
+    }
+    return m.sender;
+}
+
 export async function runMiddleware(conn, m) {
     const chatCfg = m.isGroup ? getChat(m.chat) : null;
     const userCfg = getUser(m.sender);
@@ -54,7 +73,7 @@ export async function runMiddleware(conn, m) {
                         : (global.lenguaje?.smsAntiArabe?.() || '⚠️ Número no permitido.'),
                     mentions: [m.sender],
                 });
-                await conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
+                await conn.groupParticipantsUpdate(m.chat, [canonSender(m)], 'remove');
             } catch { /* */ }
             return true;
         }
@@ -90,7 +109,7 @@ export async function runMiddleware(conn, m) {
                     mentions: [m.sender],
                 });
                 await conn.sendMessage(m.chat, { delete: m.key });
-                await conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
+                await conn.groupParticipantsUpdate(m.chat, [canonSender(m)], 'remove');
             } catch { /* */ }
             return true;
         }
@@ -108,7 +127,7 @@ export async function runMiddleware(conn, m) {
                         text: `*@${m.sender.split('@')[0]}* ha sido removido por palabras tóxicas.`,
                         mentions: [m.sender],
                     }, { quoted: m });
-                    if (m.isBotAdmin) await conn.groupParticipantsUpdate(m.chat, [m.sender], 'remove');
+                    if (m.isBotAdmin) await conn.groupParticipantsUpdate(m.chat, [canonSender(m)], 'remove');
                 } else {
                     await conn.sendMessage(m.chat, {
                         text: `Hey @${m.sender.split('@')[0]}, palabra inapropiada detectada (${userCfg.warn}/${max}).`,
