@@ -176,10 +176,21 @@ export async function execute(conn, m, cmd, args, text) {
         const groups = Object.values(all || {});
         if (!groups.length) { global.__suppressGroupAnnounce = 0; return m.reply('El bot no está en ningún grupo.'); }
 
-        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
+        // CAUSA RAÍZ del falso "No admin": antes solo se comparaba con
+        // conn.user.id (PN). En v7 el bot puede aparecer en participants con
+        // su LID (numero distinto), así que la comparación fallaba y marcaba
+        // "No admin" en grupos donde SÍ lo es. FIX: considerar TODAS las
+        // identidades del bot (PN + LID), comparar por número, y verificar
+        // realmente participant.admin ('admin' | 'superadmin').
+        const botIds = [conn.user?.id, conn.user?.lid, conn.decodeJid?.(conn.user?.id)]
+            .filter(Boolean)
+            .map(x => String(x).split('@')[0].split(':')[0]);
+        const botNumSet = new Set(botIds);
         const isBotAdminOf = (g) => (g.participants || []).some(p => {
-            const n = String(p.id || '').split('@')[0].split(':')[0];
-            return n === botNum && (p.admin === 'admin' || p.admin === 'superadmin');
+            const pid = String(p.id || p.jid || '').split('@')[0].split(':')[0];
+            const plid = p.lid ? String(p.lid).split('@')[0].split(':')[0] : null;
+            const isBot = botNumSet.has(pid) || (plid && botNumSet.has(plid));
+            return isBot && (p.admin === 'admin' || p.admin === 'superadmin');
         });
 
         // ORDEN: primero los grupos donde el bot es admin (puede dar enlace),
@@ -202,15 +213,24 @@ export async function execute(conn, m, cmd, args, text) {
             const g = slice[i];
             const n = start + i + 1;
             const members = g.participants?.length || 0;
-            const admin = isBotAdminOf(g);
-            let block = `${n}. *${g.subject || 'Sin nombre'}*\n   👥 ${members} miembros\n   🆔 ${g.id}\n   ${admin ? '👑 Admin: Sí' : '❌ Admin: No'}`;
-            if (admin) {
-                // Solo LECTURA del código existente (get, no revoca/cambia nada).
-                try { const code = await conn.groupInviteCode(g.id); if (code) block += `\n   🔗 https://chat.whatsapp.com/${code}`; }
-                catch { block += `\n   🔒 No se pudo leer el enlace`; }
-            } else {
-                block += `\n   🔒 Sin acceso al enlace`;
+            const metaAdmin = isBotAdminOf(g);
+            // VERIFICACIÓN REAL: intentar leer el enlace. Solo un admin puede
+            // obtenerlo, así que si devuelve código → el bot ES admin (aunque
+            // la metadata estuviera desactualizada). Esto elimina los falsos
+            // negativos de "No admin".
+            let link = null, realAdmin = metaAdmin, errCode = null;
+            try {
+                const code = await conn.groupInviteCode(g.id);
+                if (code) { link = `https://chat.whatsapp.com/${code}`; realAdmin = true; }
+            } catch (e) {
+                errCode = e?.output?.statusCode || e?.data || e?.message || 'error';
+                // 403/forbidden → realmente no es admin; otro error → indeterminado.
+                if (String(errCode).includes('403') || /forbidden|not-authorized/i.test(String(errCode))) realAdmin = false;
             }
+            let block = `${n}. *${g.subject || 'Sin nombre'}*\n   👥 ${members} miembros\n   🆔 ${g.id}\n   ${realAdmin ? '👑 Admin: Sí' : '❌ Admin: No'}`;
+            if (link) block += `\n   🔗 ${link}`;
+            else if (realAdmin) block += `\n   🔒 Admin pero no se pudo leer el enlace (reintenta)`;
+            else block += `\n   🔒 Sin acceso al enlace`;
             lines.push(block);
         }
         global.__suppressGroupAnnounce = 0; // fin de la ventana de supresión
