@@ -50,6 +50,8 @@ const COMMAND_META = [
     // —— Dar/quitar diamantes (HG) ——
     { names: ['adddiamond', 'dardiamante', 'adddiamante', 'addhg'], category: 'owner', description: 'Da diamantes (HG) a un usuario (owner)' },
     { names: ['deldiamond', 'quitardiamante', 'delhg'], category: 'owner', description: 'Quita diamantes (HG) a un usuario (owner)' },
+    // —— Panel de grupos ——
+    { names: ['grupos', 'groups'], category: 'owner', description: 'Lista todos los grupos del bot con stats y enlaces (owner, paginado)' },
 ];
 
 export async function execute(conn, m, cmd, args, text) {
@@ -157,6 +159,65 @@ export async function execute(conn, m, cmd, args, text) {
         u.corazones = add ? (u.corazones || 0) + amt : Math.max(0, (u.corazones || 0) - amt);
         db.markDirty();
         await conn.sendMessage(m.chat, { text: `💎 ${add ? 'Diste' : 'Quitaste'} ${fmtPremium(amt)} a @${t.split('@')[0]}.\nDiamantes actuales: ${u.diamond}.`, mentions: [t] }, { quoted: m });
+        break;
+    }
+
+    // ═══════════ PANEL DE GRUPOS (owner) ═══════════
+    case 'grupos': {
+        const PAGE = 50;
+        const page = Math.max(1, parseInt((args || [])[0]) || 1);
+        let all;
+        try { all = await conn.groupFetchAllParticipating(); }
+        catch (e) { return m.reply('❌ No pude obtener la lista de grupos: ' + (e?.message || e)); }
+        const groups = Object.values(all || {});
+        if (!groups.length) return m.reply('El bot no está en ningún grupo.');
+
+        // Identidad del bot para saber si es admin (sin pedir nada a la red).
+        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
+        const isBotAdminOf = (g) => (g.participants || []).some(p => {
+            const n = String(p.id || '').split('@')[0].split(':')[0];
+            return n === botNum && (p.admin === 'admin' || p.admin === 'superadmin');
+        });
+
+        // Estadísticas globales (cálculo barato, sin red).
+        const totalGroups = groups.length;
+        const totalMembers = groups.reduce((s, g) => s + (g.participants?.length || 0), 0);
+        const adminIn = groups.filter(isBotAdminOf).length;
+        const notAdminIn = totalGroups - adminIn;
+        const totalUsers = Object.keys(db.data.users || {}).length;
+
+        const pages = Math.ceil(totalGroups / PAGE);
+        if (page > pages) return m.reply(`Solo hay ${pages} página(s). Usa .grupos ${pages}.`);
+        const start = (page - 1) * PAGE;
+        const slice = groups.slice(start, start + PAGE);
+
+        // Enlaces: SOLO de la página actual y SOLO si el bot es admin
+        // (groupInviteCode es una llamada de red; pedirla para todos sería lag).
+        const lines = [];
+        for (let i = 0; i < slice.length; i++) {
+            const g = slice[i];
+            const n = start + i + 1;
+            const members = g.participants?.length || 0;
+            let link = '🔒 Sin permisos para obtener enlace';
+            if (isBotAdminOf(g)) {
+                try { const code = await conn.groupInviteCode(g.id); if (code) link = `🔗 https://chat.whatsapp.com/${code}`; }
+                catch { link = '🔒 No se pudo obtener el enlace'; }
+            }
+            lines.push(`${n}. *${g.subject || 'Sin nombre'}*\n   👥 ${members} miembros\n   🆔 ${g.id}\n   ${link}`);
+        }
+
+        const header =
+`📊 *KimdanBot está en ${totalGroups} grupos*
+
+🏠 Grupos: ${totalGroups}
+👥 Usuarios totales: ${totalUsers.toLocaleString('es')}
+👑 Soy admin en: ${adminIn}
+🔒 No soy admin en: ${notAdminIn}
+👤 Miembros sumados: ${totalMembers.toLocaleString('es')}
+
+📄 Página ${page}/${pages}${pages > 1 ? ` · _.grupos ${page < pages ? page + 1 : 1}_` : ''}
+━━━━━━━━━━━━━━`;
+        await m.reply(header + '\n\n' + lines.join('\n\n'));
         break;
     }
 

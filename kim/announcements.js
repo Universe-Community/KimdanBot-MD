@@ -876,6 +876,16 @@ export function attachAnnouncements(conn) {    if (!conn?.ev) return;
             }
             if (chatMap.size === 0) _messageCache.delete(chatJid);
         }
+        // Poda de _presenceCache y _afkBackCooldown: sin esto crecen sin
+        // límite (una entrada por cada JID que alguna vez estuvo online o
+        // volvió de AFK). Se eliminan las entradas más viejas que 6h.
+        const presCutoff = Date.now() - 6 * 60 * 60 * 1000;
+        for (const [jid, ts] of _presenceCache) {
+            if (!ts || ts < presCutoff) _presenceCache.delete(jid);
+        }
+        for (const [jid, ts] of _afkBackCooldown) {
+            if (ts < presCutoff) _afkBackCooldown.delete(jid);
+        }
     }, 30 * 60 * 1000).unref();
 
     console.log(chalk.cyan('[announcements] ✓ welcome/bye/promote/demote'));
