@@ -52,6 +52,7 @@ const COMMAND_META = [
     { names: ['deldiamond', 'quitardiamante', 'delhg'], category: 'owner', description: 'Quita diamantes (HG) a un usuario (owner)' },
     // —— Panel de grupos ——
     { names: ['grupos', 'groups'], category: 'owner', description: 'Lista todos los grupos del bot con stats y enlaces (owner, paginado)' },
+    { names: ['salirgrupo', 'leavegroup', 'salir'], category: 'owner', description: 'El bot abandona un grupo por ID o nombre (owner)' },
 ];
 
 export async function execute(conn, m, cmd, args, text) {
@@ -164,60 +165,97 @@ export async function execute(conn, m, cmd, args, text) {
 
     // ═══════════ PANEL DE GRUPOS (owner) ═══════════
     case 'grupos': {
-        const PAGE = 50;
+        const PAGE = 30;
         const page = Math.max(1, parseInt((args || [])[0]) || 1);
         let all;
+        // Suprime anuncios de groups.update mientras consultamos (las consultas
+        // masivas pueden hacer que WhatsApp reenvíe metadata y dispare anuncios).
+        global.__suppressGroupAnnounce = Date.now() + 30000;
         try { all = await conn.groupFetchAllParticipating(); }
-        catch (e) { return m.reply('❌ No pude obtener la lista de grupos: ' + (e?.message || e)); }
+        catch (e) { global.__suppressGroupAnnounce = 0; return m.reply('❌ No pude obtener la lista de grupos: ' + (e?.message || e)); }
         const groups = Object.values(all || {});
-        if (!groups.length) return m.reply('El bot no está en ningún grupo.');
+        if (!groups.length) { global.__suppressGroupAnnounce = 0; return m.reply('El bot no está en ningún grupo.'); }
 
-        // Identidad del bot para saber si es admin (sin pedir nada a la red).
         const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
         const isBotAdminOf = (g) => (g.participants || []).some(p => {
             const n = String(p.id || '').split('@')[0].split(':')[0];
             return n === botNum && (p.admin === 'admin' || p.admin === 'superadmin');
         });
 
-        // Estadísticas globales (cálculo barato, sin red).
+        // ORDEN: primero los grupos donde el bot es admin (puede dar enlace),
+        // luego el resto. Dentro de cada sección, por número de miembros (desc).
+        const withAccess = groups.filter(isBotAdminOf).sort((a, b) => (b.participants?.length || 0) - (a.participants?.length || 0));
+        const noAccess   = groups.filter(g => !isBotAdminOf(g)).sort((a, b) => (b.participants?.length || 0) - (a.participants?.length || 0));
+        const ordered = [...withAccess, ...noAccess];
+
         const totalGroups = groups.length;
         const totalMembers = groups.reduce((s, g) => s + (g.participants?.length || 0), 0);
-        const adminIn = groups.filter(isBotAdminOf).length;
-        const notAdminIn = totalGroups - adminIn;
         const totalUsers = Object.keys(db.data.users || {}).length;
 
         const pages = Math.ceil(totalGroups / PAGE);
-        if (page > pages) return m.reply(`Solo hay ${pages} página(s). Usa .grupos ${pages}.`);
+        if (page > pages) { global.__suppressGroupAnnounce = 0; return m.reply(`Solo hay ${pages} página(s). Usa .grupos ${pages}.`); }
         const start = (page - 1) * PAGE;
-        const slice = groups.slice(start, start + PAGE);
+        const slice = ordered.slice(start, start + PAGE);
 
-        // Enlaces: SOLO de la página actual y SOLO si el bot es admin
-        // (groupInviteCode es una llamada de red; pedirla para todos sería lag).
         const lines = [];
         for (let i = 0; i < slice.length; i++) {
             const g = slice[i];
             const n = start + i + 1;
             const members = g.participants?.length || 0;
-            let link = '🔒 Sin permisos para obtener enlace';
-            if (isBotAdminOf(g)) {
-                try { const code = await conn.groupInviteCode(g.id); if (code) link = `🔗 https://chat.whatsapp.com/${code}`; }
-                catch { link = '🔒 No se pudo obtener el enlace'; }
+            const admin = isBotAdminOf(g);
+            let block = `${n}. *${g.subject || 'Sin nombre'}*\n   👥 ${members} miembros\n   🆔 ${g.id}\n   ${admin ? '👑 Admin: Sí' : '❌ Admin: No'}`;
+            if (admin) {
+                // Solo LECTURA del código existente (get, no revoca/cambia nada).
+                try { const code = await conn.groupInviteCode(g.id); if (code) block += `\n   🔗 https://chat.whatsapp.com/${code}`; }
+                catch { block += `\n   🔒 No se pudo leer el enlace`; }
+            } else {
+                block += `\n   🔒 Sin acceso al enlace`;
             }
-            lines.push(`${n}. *${g.subject || 'Sin nombre'}*\n   👥 ${members} miembros\n   🆔 ${g.id}\n   ${link}`);
+            lines.push(block);
         }
+        global.__suppressGroupAnnounce = 0; // fin de la ventana de supresión
 
         const header =
 `📊 *KimdanBot está en ${totalGroups} grupos*
 
 🏠 Grupos: ${totalGroups}
 👥 Usuarios totales: ${totalUsers.toLocaleString('es')}
-👑 Soy admin en: ${adminIn}
-🔒 No soy admin en: ${notAdminIn}
+👑 Soy admin en: ${withAccess.length}
+🔒 No soy admin en: ${noAccess.length}
 👤 Miembros sumados: ${totalMembers.toLocaleString('es')}
 
 📄 Página ${page}/${pages}${pages > 1 ? ` · _.grupos ${page < pages ? page + 1 : 1}_` : ''}
+🔓 Con enlace primero · 🔒 Sin acceso después
 ━━━━━━━━━━━━━━`;
         await m.reply(header + '\n\n' + lines.join('\n\n'));
+        break;
+    }
+
+    case 'salirgrupo': {
+        const arg = (text || '').trim();
+        if (!arg) return m.reply('Uso: .salirgrupo <ID@g.us>  o  .salirgrupo <nombre del grupo>');
+        let targetId = null;
+        if (/@g\.us$/.test(arg)) {
+            targetId = arg;
+        } else {
+            // Buscar por nombre (confirma mostrando el match).
+            global.__suppressGroupAnnounce = Date.now() + 15000;
+            let all = {};
+            try { all = await conn.groupFetchAllParticipating(); } catch { /* */ }
+            global.__suppressGroupAnnounce = 0;
+            const matches = Object.values(all).filter(g => (g.subject || '').toLowerCase().includes(arg.toLowerCase()));
+            if (!matches.length) return m.reply(`No encontré ningún grupo que contenga "${arg}".`);
+            if (matches.length > 1) {
+                return m.reply(`Hay ${matches.length} grupos que coinciden. Usa el ID exacto:\n\n` +
+                    matches.slice(0, 10).map(g => `• *${g.subject}*\n  🆔 ${g.id}`).join('\n'));
+            }
+            targetId = matches[0].id;
+        }
+        try {
+            await conn.sendMessage(targetId, { text: '💜 Gracias por usar *KimdanBot*.\n\nHasta pronto~ (´｡• ᵕ •｡`)' }).catch(() => {});
+            await conn.groupLeave(targetId);
+            await m.reply(`✅ Salí del grupo:\n🆔 ${targetId}`);
+        } catch (e) { await m.reply('❌ No pude salir del grupo: ' + (e?.message || e)); }
         break;
     }
 

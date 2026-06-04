@@ -583,6 +583,12 @@ async function onGroupsUpdate(conn, updates) {
     for (const u of updates || []) {
         if (!u.id) continue;
 
+        // Si el propio bot está haciendo consultas masivas de grupos (p.ej.
+        // el comando #grupos lee metadata/invite de muchos grupos), WhatsApp
+        // puede reenviar `groups.update` con metadata ya conocida. Esos NO
+        // son cambios reales hechos por un usuario → no se anuncian.
+        if (global.__suppressGroupAnnounce && Date.now() < global.__suppressGroupAnnounce) continue;
+
         // Log diagnóstico: muestra qué campos cambió WhatsApp.
         const fields = Object.keys(u).filter(k => k !== 'id');
         console.log(chalk.bold.magenta(
