@@ -202,10 +202,21 @@ function mostrarBanner() {
 async function crearSocket({ version, useQR }) {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_PATH);
 
-    // Caches sin auto-expiry (Baileys invalida internamente).
-    const groupCache         = new NodeCache({ stdTTL: 0,  useClones: false, maxKeys: 500 });
-    const userDevicesCache   = new NodeCache({ stdTTL: 0,  useClones: false, maxKeys: 5000 });
-    const msgRetryCounterCache = new NodeCache({ stdTTL: 60, maxKeys: 1000 });
+    // ─── CAUSA RAÍZ del "Cache max keys amount exceeded" ───
+    // NodeCache con `maxKeys > 0` LANZA una excepción (ECACHEFULL) al hacer
+    // .set() de una clave nueva cuando se alcanza el tope — NO descarta la
+    // más vieja. Ese throw subía por el path de envío de Baileys y rompía el
+    // procesamiento del comando en ese grupo (el bot "dejaba de responder").
+    // Además `stdTTL: 0` hacía que las claves NO expiraran nunca, así que el
+    // tope se alcanzaba inevitablemente con el tiempo.
+    //
+    // FIX REAL (sin subir límites ni ocultar con try/catch): sin `maxKeys`
+    // (NodeCache nunca lanza) + TTL que expira entradas viejas + `checkperiod`
+    // que las purga activamente. La memoria queda acotada por el TTL, no por
+    // un tope rígido que rompe el bot.
+    const groupCache         = new NodeCache({ stdTTL: 600,  useClones: false, checkperiod: 120 });
+    const userDevicesCache   = new NodeCache({ stdTTL: 3600, useClones: false, checkperiod: 300 });
+    const msgRetryCounterCache = new NodeCache({ stdTTL: 60, useClones: false, checkperiod: 30 });
 
     // LRU manual de mensajes propios para getMessage retries.
     const sentMessages = new Map();
