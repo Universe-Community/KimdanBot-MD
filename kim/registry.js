@@ -123,14 +123,13 @@ export function buildMenu(prefix = '.') {
     for (const [cat, cmds] of sorted) {
         const emoji = CATEGORY_EMOJI[cat] || '✿';
         const label = CATEGORY_LABEL[cat] || cat.toUpperCase();
-        out += `\n*╭─⊰ ${emoji} ${label} ⊱─╮*\n`;
         const cmdsSorted = cmds.slice().sort((a, b) => a.name.localeCompare(b.name));
+        // Cabecera de categoría con conteo, estilo premium.
+        out += `\n╭─❀ *${emoji} ${label}* ❀─ ⬣\n`;
         for (const c of cmdsSorted) {
-            out += `*│* ${prefix}${c.name}`;
-            if (c.description) out += ` _— ${c.description}_`;
-            out += '\n';
+            out += `┊ ✧ ${prefix}${c.name}\n`;
         }
-        out += `*╰────────────────╯*\n`;
+        out += `╰━━━━━━━━━━━━ ⬣\n`;
     }
     return out.trim();
 }

@@ -43,3 +43,29 @@ export function kv(label, value) { return `${label}: *${value}*`; }
 
 /** Pie decorativo de marca. */
 export function brand(name = 'KimdanBot') { return `⬣ ${name} · 💜 BL/Yaoi`; }
+
+// ─── Caritas kawaii (úsalas con moderación) ─────────────────────────
+export const FACES = {
+    happy:  '(˶ᵔ ᵕ ᵔ˶)',
+    love:   '(｡♥‿♥｡)',
+    soft:   '(´｡• ᵕ •｡`)',
+    hug:    '(づ｡◕‿‿◕｡)づ',
+    sad:    '(｡•́︿•̀｡)',
+    shy:    '(♡˙︶˙♡)',
+};
+/** Devuelve una carita por clave (o vacío si no existe). */
+export function face(k) { return FACES[k] || ''; }
+
+/**
+ * Caja "soft": misma estructura que box() pero con decoración ₊˚ en cada
+ * línea, para mensajes que quieran un toque extra cute. Compatible con el
+ * mismo uso: softbox(titulo, [lineas], faceKey?).
+ */
+export function softbox(title, lines = [], faceKey = '') {
+    const body = (Array.isArray(lines) ? lines : [lines]).map(l => `│ ₊˚ ${l}`).join('\n');
+    const top = `╭─❀ ${title} ❀─⬣`;
+    const bottom = faceKey && FACES[faceKey]
+        ? `╰─ ${FACES[faceKey]} ─────⬣`
+        : `╰──────────────⬣`;
+    return `${top}\n${body}\n${bottom}`;
+}

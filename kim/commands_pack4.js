@@ -53,7 +53,7 @@ const COMMAND_META = [
     { names: ['close'], category: 'group', description: 'Cerrar grupo (solo admins)' },
     { names: ['setwelcome'], category: 'config', description: 'Mensaje de bienvenida personalizado' },
     { names: ['setgoodbye'], category: 'config', description: 'Mensaje de despedida personalizado' },
-    { names: ['warn'], category: 'group', description: 'Advertir a un usuario' },
+    { names: ['warn', 'advertencia'], category: 'group', description: 'Advertir a un usuario' },
     { names: ['delwarn'], category: 'group', description: 'Quitar una advertencia' },
     { names: ['warns'], category: 'group', description: 'Ver advertencias' },
     { names: ['setwarnlimit'], category: 'config', description: 'Límite de advertencias' },

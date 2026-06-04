@@ -5,7 +5,7 @@
 import { command } from './registry.js';
 import { getUser, getChat, db } from './db.js';
 import { fmtMoney, fmtPremium, fmtAffinity, CURRENCY, vipMult, isVip } from './theme.js';
-import { box, bar } from './ui.js';
+import { box, bar, softbox, face } from './ui.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────
 const needGroup = (m) => { if (!m.isGroup) { m.reply('⚠️ Solo en grupos.'); return false; } return true; };
@@ -80,14 +80,14 @@ export async function execute(conn, m, cmd, args, text) {
     case 'balance': {
         const t = target(m, text) || m.sender; const u = getUser(t);
         await conn.sendMessage(m.chat, {
-            text: box(`💜 BILLETERA JINX`, [
+            text: softbox(`Wallet Jinx 💜`, [
                 `👤 @${t.split('@')[0]}`,
-                `💰 ${fmtMoney(u.money)}`,
-                `🏦 ${fmtMoney(u.bank)} (banco)`,
-                `💎 ${fmtPremium(u.corazones)}`,
-                `🤝 ${fmtAffinity(u.affinity)}`,
-                `Σ Total: ${fmtMoney((u.money||0)+(u.bank||0))}`,
-            ]),
+                `💰 Jinx Coins: ${fmtMoney(u.money)}`,
+                `🏦 Banco: ${fmtMoney(u.bank)}`,
+                `💎 Heart Gems: ${fmtPremium(u.corazones)}`,
+                `🤝 Affinity: ${fmtAffinity(u.affinity)}`,
+                `✨ Total: ${fmtMoney((u.money||0)+(u.bank||0))}`,
+            ], 'love'),
             mentions: [t],
         }, { quoted: m });
         break;
@@ -110,7 +110,11 @@ export async function execute(conn, m, cmd, args, text) {
         const reward = 500 + Math.floor(Math.random() * 1500);
         const hg = Math.random() < 0.15 ? 1 : 0;
         u.money += reward; u.corazones += hg; u.lastdaily = Date.now(); db.markDirty();
-        await m.reply(`🎁 *Recompensa diaria*\n+${fmtMoney(reward)}${hg ? `\n+${fmtPremium(hg)} (¡suerte!)` : ''}`);
+        await m.reply(box('🎁 RECOMPENSA DIARIA', [
+            `💜 +${fmtMoney(reward)}`,
+            ...(hg ? [`💎 +${fmtPremium(hg)} (¡suerte!)`] : []),
+            '🌸 Vuelve mañana por más',
+        ]));
         break;
     }
     case 'work': {

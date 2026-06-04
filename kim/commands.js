@@ -108,7 +108,7 @@ const COMMAND_META = [
     { names: ['creador', 'owner', 'dono'], category: 'info', description: 'Datos del creador' },
     { names: ['donar', 'donacion', 'donate'], category: 'info', description: 'Información de donaciones' },
     { names: ['canales', 'cuentaskim', 'cuentas', 'cuentaskimbot'], category: 'info', description: 'Canales oficiales' },
-    { names: ['grupos', 'gruposkim'], category: 'info', description: 'Grupos oficiales' },
+    { names: ['gruposoficiales', 'gruposkim', 'oficial'], category: 'info', description: 'Grupos oficiales' },
     { names: ['colaboradores'], category: 'info', description: 'Equipo del bot' },
 
     // ─── OWNER ───
@@ -168,7 +168,6 @@ const COMMAND_META = [
     { names: ['infogrupo', 'groupinfo'], category: 'group', description: 'Info del grupo' },
     { names: ['setname', 'setnameg', 'setnombre', 'setppname', 'nuevonombre', 'newnombre'], category: 'group', description: 'Cambia el nombre del grupo' },
     { names: ['setdesc', 'setdescripcion', 'descripcion', 'descripción'], category: 'group', description: 'Cambia la descripción' },
-    { names: ['warn', 'advertencia'], category: 'group', description: 'Advierte a un usuario' },
     { names: ['unwarn', 'quitardvertencia'], category: 'group', description: 'Quita una advertencia' },
     { names: ['listwarn'], category: 'group', description: 'Lista usuarios con advertencias' },
     { names: ['grupo', 'grup'], category: 'group', description: 'Abre/cierra el grupo' },
@@ -219,7 +218,7 @@ const COMMAND_META = [
     { names: ['fake'], category: 'fun', description: '% fake' },
     { names: ['racista'], category: 'fun', description: '% racista' },
     { names: ['love'], category: 'fun', description: 'Calculadora de amor' },
-    { names: ['pareja', 'formarpareja'], category: 'fun', description: 'Empareja al azar' },
+    { names: ['emparejar', 'formarpareja', 'shipme'], category: 'fun', description: 'Te empareja al azar con alguien del grupo' },
     { names: ['piropo'], category: 'fun', description: 'Un piropo aleatorio' },
 
     // ─── MISC ───
@@ -263,22 +262,36 @@ export async function execute(conn, m, rawCommand, args, text) {
                 const p = m.prefix || (Array.isArray(global.prefix) ? global.prefix[0] : '.');
                 const ownerName = global.owner?.[0]?.[1] || 'kim';
                 const totalUsers = Object.keys(db.data.users).length;
-                const totalChats = Object.keys(db.data.chats).length;
                 const up = runtime(process.uptime());
-                const mem = (process.memoryUsage().rss / 1024 / 1024).toFixed(1);
-                const header = `╭━━━〔 🌸 *${global.botname || 'KimdanBot-MD'}* 〕━━━⬣
-┃ ✦ _Bot BL / Yaoi · Jinx_
-┃ ✦ v${global.vs || '3.0.0'}
-┃ ⏱ Activo: ${up}
-┃ 🧠 RAM: ${mem} MB
-┃ 👥 Usuarios: ${totalUsers} · 💬 Chats: ${totalChats}
-┃ ⌨️ Comandos: ${commandCount()} (${aliasCount()} alias)
-┃ 💜 JX · 💎 HG · 🤝 AP
-┃ 👑 Creador: ${ownerName}
-╰━━━━━━━━━━━━━⬣
-`;
+                const mem = (process.memoryUsage().rss / 1024 / 1024).toFixed(0);
+                const ping = Date.now() - (m.messageTimestamp ? m.messageTimestamp * 1000 : Date.now());
+                const pingTxt = Math.abs(ping) < 100000 ? `${Math.abs(ping)} ms` : '\u2014 ms';
+                const now = new Date();
+                const fecha = now.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+                const hora = now.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+                const u = getUser(m.sender);
+                const userName = m.pushName || ownerName;
+                const vip = (isVip(u) || m.isVip) ? ' \ud83d\udc51' : '';
+                const header =
+`\u256d\u2501\u2501\u2501\u2740\u273f\u2740\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u29e3
+\u2503   \ud83d\udc9c *${(global.botname || 'KimdanBot-MD').toUpperCase()}* \ud83d\udc9c
+\u2503   \u02da\u208a\u00b7 \u035f\u035f\u035e\u035e\u27b3 _BL \u00b7 Yaoi \u00b7 Jinx_
+\u2503\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u29e3
+\u2503 \u273f Hola, *${userName}*${vip}
+\u2503 \ud83e\udde1 ${fecha} \u00b7 ${hora}
+\u2503 \u26a1 Ping: ${pingTxt}
+\u2503 \u23f1 Uptime: ${up}
+\u2503 \ud83e\udde0 RAM: ${mem} MB
+\u2503\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u29e3
+\u2503 \ud83d\udcb0 ${fmtMoney(u.money)}
+\u2503 \ud83d\udc8e ${fmtPremium(u.corazones)}  \ud83e\udd1d ${fmtAffinity(u.affinity)}
+\u2503\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u29e3
+\u2503 \ud83c\udfb4 Comandos: ${commandCount()}
+\u2503 \ud83d\udc65 Usuarios: ${totalUsers}
+\u2503 \ud83c\udf10 v${global.vs || '3.0.0'} \u00b7 by ${ownerName}
+\u2570\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u29e3`;
                 const list = buildMenu(p);
-                const fullText = header + '\n' + list + `\n\n*╰ ${global.botname || 'KimdanBot-MD'} ╯*`;
+                const fullText = header + '\n' + list + `\n\n╭❀ _Usa ${p}<comando>_ ❀╮\n╰━ 💜 ${global.botname || 'KimdanBot'} ━╯`;
                 try {
                     await conn.sendMessage(m.chat, {
                         image: { url: global.imagen1 || 'https://telegra.ph/file/6ef00a79a7c90c05e7043.jpg' },
@@ -355,7 +368,7 @@ export async function execute(conn, m, rawCommand, args, text) {
                 break;
             }
 
-            case 'grupos': {
+            case 'gruposoficiales': {
                 const list = (global.wa || []).filter(Boolean).slice(0, 5).map((u, i) => `*${i + 1}.* ${u}`).join('\n');
                 await m.reply(`🍓 *Grupos oficiales* 🍓\n\n${list || 'Sin grupos configurados.'}`);
                 break;
@@ -1077,29 +1090,6 @@ export async function execute(conn, m, rawCommand, args, text) {
                 break;
             }
 
-            case 'warn': {
-                if (!needGroupAdmin(m)) return;
-                const t = resolveTarget(m, text);
-                if (!t) return m.reply('Menciona o cita al usuario.');
-                const u = getUser(t);
-                u.warn = (u.warn || 0) + 1;
-                db.markDirty();
-                const max = parseInt(global.maxwarn) || 4;
-                if (u.warn >= max && m.isBotAdmin) {
-                    try {
-                        await conn.sendMessage(m.chat, {
-                            text: `⚠️ @${t.split('@')[0]} alcanzó ${max} advertencias.`,
-                            mentions: [t],
-                        });
-                        await conn.groupParticipantsUpdate(m.chat, [t], 'remove');
-                        u.warn = 0;
-                    } catch { /* */ }
-                    break;
-                }
-                await m.reply(`⚠️ @${t.split('@')[0]} advertido (${u.warn}/${max}).`, null, { mentions: [t] });
-                break;
-            }
-
             case 'unwarn': {
                 if (!needGroupAdmin(m)) return;
                 const t = resolveTarget(m, text);
@@ -1687,7 +1677,7 @@ export async function execute(conn, m, rawCommand, args, text) {
                 break;
             }
 
-            case 'pareja': {
+            case 'emparejar': {
                 if (!m.isGroup) return m.reply('Solo en grupos.');
                 const participants = m.participants?.map(p => p.id).filter(id => id !== m.sender) || [];
                 if (!participants.length) return m.reply('No hay candidatos.');

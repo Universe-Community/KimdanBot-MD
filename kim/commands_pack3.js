@@ -34,6 +34,9 @@ const INTERACTIONS = [
     [['kick'],'kick','{a} patea a {b} 🦵'], [['dance'],'dance','{a} baila 💃'], [['cry'],'cry','{a} llora 😭'],
     [['laugh'],'laugh','{a} se ríe 😂'], [['happy','feliz'],'happy','{a} salta de felicidad 😄'],
     [['blush'],'blush','{a} se sonroja 😊'], [['pout'],'pout','{a} hace pucheros 😤'],
+    [['jealous','celos'],'pout','{a} siente celos de {b} 😤💢'],
+    [['comfort','consolar'],'pat','{a} consuela a {b} 🫂💗'],
+    [['protect','proteger'],'hug','{a} protege a {b} 🛡️💜'],
     [['shy','timido'],'blush','{a} se siente tímido 😳'], [['sad','triste'],'cry','{a} está triste 😔'],
     [['bored','aburrido'],'bored','{a} está aburrido 😪'], [['angry','enojado'],'pout','{a} está enojado 😠'],
     [['scared'],'cry','{a} está asustado 😱'], [['sleep'],'sleep','{a} duerme 😴'], [['think'],'think','{a} piensa 🤔'],
@@ -79,7 +82,7 @@ export async function execute(conn, m, cmd, args, text) {
         const out = phrase.replace('{a}', `@${m.sender.split('@')[0]}`).replace('{b}', t ? `@${t.split('@')[0]}` : '');
         const mentions = [m.sender]; if (t) mentions.push(t);
         // Interacciones románticas BL suman afinidad mutua
-        if (t && ['hug','kiss','kisscheek','cuddle','handhold','love'].includes(cmd)) {
+        if (t && ['hug','kiss','kisscheek','cuddle','handhold','love','comfort','protect'].includes(cmd)) {
             try { getUser(m.sender).affinity = (getUser(m.sender).affinity||0)+1; getUser(t).affinity = (getUser(t).affinity||0)+1; db.markDirty(); } catch { /* */ }
         }
         try {

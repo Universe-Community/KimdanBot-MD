@@ -19,6 +19,27 @@ const GIF_ROOT = path.resolve('./media/gifs');
 const HOT = new Map();          // key → Buffer
 const HOT_MAX = 40;
 
+// Caché del listado de GIFs propios por categoría (evita readdirSync en CADA
+// interacción anime, que bloquea el event loop en grupos activos). La carpeta
+// cambia rara vez, así que un TTL corto es seguro.
+const _dirCache = new Map();    // dir → { files:[], ts }
+const DIR_TTL = 60000;
+function ownGifsOf(dir) {
+    const now = Date.now();
+    const c = _dirCache.get(dir);
+    if (c && now - c.ts < DIR_TTL) return c.files;
+    let files = [];
+    try {
+        if (fs.existsSync(dir)) {
+            files = fs.readdirSync(dir).filter(f =>
+                /\.(mp4|gif|webp)$/i.test(f) && !/^[0-9a-f]{16}\./i.test(f));
+        }
+    } catch { /* */ }
+    _dirCache.set(dir, { files, ts: now });
+    if (_dirCache.size > 200) { for (const [k, v] of _dirCache) if (now - v.ts > DIR_TTL) _dirCache.delete(k); }
+    return files;
+}
+
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -45,16 +66,13 @@ export async function getGifBuffer(category, url) {
     //    Se ignoran los archivos-caché (nombre = hash de 16 hex) y los
     //    marcadores .gitkeep/README. Si hay propios, se usa uno al azar.
     try {
-        if (fs.existsSync(dir)) {
-            const own = fs.readdirSync(dir).filter(f =>
-                /\.(mp4|gif|webp)$/i.test(f) && !/^[0-9a-f]{16}\./i.test(f));
-            if (own.length) {
-                const pick = own[Math.floor(Math.random() * own.length)];
-                const fp = path.join(dir, pick);
-                if (HOT.has(fp)) { const b = HOT.get(fp); touchHot(fp, b); return b; }
-                const buf = await fs.promises.readFile(fp);
-                if (buf?.length > 100) { touchHot(fp, buf); return buf; }
-            }
+        const own = ownGifsOf(dir);
+        if (own.length) {
+            const pick = own[Math.floor(Math.random() * own.length)];
+            const fp = path.join(dir, pick);
+            if (HOT.has(fp)) { const b = HOT.get(fp); touchHot(fp, b); return b; }
+            const buf = await fs.promises.readFile(fp);
+            if (buf?.length > 100) { touchHot(fp, buf); return buf; }
         }
     } catch { /* si algo falla, se usa la fuente remota */ }
 
@@ -101,9 +119,7 @@ export async function getLocalGif(category) {
     const safeCat = String(category).replace(/[^\w-]/g, '_');
     const dir = path.join(GIF_ROOT, safeCat);
     try {
-        if (!fs.existsSync(dir)) return null;
-        const own = fs.readdirSync(dir).filter(f =>
-            /\.(mp4|gif|webp)$/i.test(f) && !/^[0-9a-f]{16}\./i.test(f));
+        const own = ownGifsOf(dir);
         if (!own.length) return null;
         const pick = own[Math.floor(Math.random() * own.length)];
         const fp = path.join(dir, pick);

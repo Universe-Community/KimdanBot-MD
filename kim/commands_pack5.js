@@ -5,7 +5,7 @@
 
 import { command } from './registry.js';
 import { getUser, db } from './db.js';
-import { box } from './ui.js';
+import { box, softbox } from './ui.js';
 import { CHARACTERS, charsBySeries, findCharacter, RARITIES } from './theme.js';
 
 const ANILIST = 'https://graphql.anilist.co';
@@ -70,6 +70,11 @@ const COMMAND_META = [
     { names: ['coleccion', 'collection', 'micoleccion'], category: 'gacha', description: '🎴 Tu colección de personajes' },
     { names: ['husbandobl', 'husbando'], category: 'gacha', description: '🎴 Husbando BL aleatorio del catálogo' },
     { names: ['pareja', 'mipareja'], category: 'rpg', description: '💞 Muestra tu pareja actual' },
+    { names: ['favcharacter', 'favchar', 'micharfav'], category: 'gacha', description: '💖 Tu personaje favorito' },
+    { names: ['date', 'cita'], category: 'rpg', description: '💕 Lleva a alguien a una cita BL (200 JX, +AP)' },
+    { names: ['gift', 'regalohg'], category: 'rpg', description: '🎁 Regala un Heart Gem (+AP mutuo)' },
+    { names: ['propose', 'proponer'], category: 'rpg', description: '💍 Propón matrimonio a alguien' },
+    { names: ['relationship', 'relacion'], category: 'rpg', description: '💑 Estado de tu relación BL' },
 ];
 
 export async function execute(conn, m, cmd, args, text) {
@@ -153,6 +158,85 @@ export async function execute(conn, m, cmd, args, text) {
         const u = getUser(m.sender);
         if (!u.married) return m.reply('💔 No tienes pareja. Usa .marry @alguien.');
         await conn.sendMessage(m.chat, { text: box('💞 TU PAREJA', [`@${m.sender.split('@')[0]} 💍 @${u.married.split('@')[0]}`]), mentions: [m.sender, u.married] }, { quoted: m });
+        break;
+    }
+
+    case 'favcharacter': {
+        const u = getUser(m.sender);
+        if (!u.favorite) return m.reply('🎴 No tienes personaje favorito. Usa .setfavourite <nombre>.');
+        const c = findCharacter(u.favorite);
+        await conn.sendMessage(m.chat, { text: box('💖 TU PERSONAJE FAVORITO', [
+            `💜 *${c?.name || u.favorite}*`, c?.series ? `📺 ${c.series}` : '', '🤝 Tu corazón le pertenece',
+        ].filter(Boolean)), mentions: [m.sender] }, { quoted: m });
+        break;
+    }
+
+    case 'date': {
+        // Cita BL: cuesta 200 JX, da afinidad con la pareja (o aleatoria).
+        const u = getUser(m.sender);
+        const COST = 200;
+        if ((u.money || 0) < COST) return m.reply(`💸 Una cita cuesta ${COST} JX y no tienes suficiente.`);
+        const t = m.mentionedJid?.[0] || u.married;
+        if (!t) return m.reply('💞 Etiqueta a alguien para tu cita: .date @usuario');
+        u.money -= COST;
+        const ap = 10 + Math.floor(Math.random() * 20);
+        u.affinity = (u.affinity || 0) + ap;
+        const tu = getUser(t); tu.affinity = (tu.affinity || 0) + ap;
+        db.markDirty();
+        const lugares = ['una cafetería temática 🍰', 'el cine viendo un drama BL 🎬', 'un parque al atardecer 🌇', 'una librería de manhwa 📚', 'un festival de anime 🎴'];
+        await conn.sendMessage(m.chat, { text: softbox('Cita BL 💕', [
+            `@${m.sender.split('@')[0]} llevó a @${t.split('@')[0]} a ${lugares[Math.floor(Math.random()*lugares.length)]}`,
+            `🤝 +${ap} AP para ambos`, `💸 -${COST} JX`,
+        ], 'love'), mentions: [m.sender, t] }, { quoted: m });
+        break;
+    }
+
+    case 'gift': {
+        // Regalar HG a alguien (sube afinidad mutua).
+        const u = getUser(m.sender);
+        const t = m.mentionedJid?.[0];
+        if (!t) return m.reply('🎁 Etiqueta a quién regalar: .gift @usuario');
+        if (t === m.sender) return m.reply('🎁 No puedes regalarte a ti mismo.');
+        if ((u.corazones || 0) < 1) return m.reply('💎 Necesitas al menos 1 Heart Gem para regalar.');
+        u.corazones -= 1;
+        const tu = getUser(t); tu.corazones = (tu.corazones || 0) + 1;
+        u.affinity = (u.affinity || 0) + 5; tu.affinity = (tu.affinity || 0) + 5;
+        db.markDirty();
+        const regalos = ['un ramo de rosas 🌹', 'chocolates 🍫', 'un peluche 🧸', 'una carta de amor 💌', 'un manhwa firmado 📖'];
+        await conn.sendMessage(m.chat, { text: softbox('Regalo BL 🎁', [
+            `@${m.sender.split('@')[0]} le regaló ${regalos[Math.floor(Math.random()*regalos.length)]} a @${t.split('@')[0]}`,
+            `💎 -1 HG  ·  🤝 +5 AP mutuo`,
+        ], 'hug'), mentions: [m.sender, t] }, { quoted: m });
+        break;
+    }
+
+    case 'propose': {
+        // Proponer matrimonio (formaliza con .marry; aquí es el gesto romántico).
+        const t = m.mentionedJid?.[0];
+        if (!t) return m.reply('💍 Etiqueta a tu amado/a: .propose @usuario');
+        if (t === m.sender) return m.reply('💍 No puedes proponerte matrimonio a ti mismo 😅');
+        const u = getUser(m.sender);
+        if (u.married) return m.reply('💔 Ya estás comprometido/a. Usa .divorce primero.');
+        await conn.sendMessage(m.chat, { text: softbox('Propuesta BL 💍', [
+            `@${m.sender.split('@')[0]} se arrodilla ante @${t.split('@')[0]} 💞`,
+            '"¿Quieres pasar la eternidad conmigo?"',
+            `Acepta con: .marry @${m.sender.split('@')[0]}`,
+        ], 'shy'), mentions: [m.sender, t] }, { quoted: m });
+        break;
+    }
+
+    case 'relationship': {
+        // Estado de relación: pareja + afinidad combinada.
+        const u = getUser(m.sender);
+        if (!u.married) return m.reply('💔 Estás soltero/a. Usa .propose y .marry.');
+        const tu = getUser(u.married);
+        const combined = (u.affinity || 0) + (tu.affinity || 0);
+        const niveles = combined > 500 ? 'Almas gemelas 💞' : combined > 200 ? 'Enamorados 💕' : combined > 50 ? 'Conociéndose 💗' : 'Recién empezando 🌱';
+        await conn.sendMessage(m.chat, { text: softbox('Relación BL 💑', [
+            `@${m.sender.split('@')[0]} 💍 @${u.married.split('@')[0]}`,
+            `🤝 Afinidad combinada: ${combined} AP`,
+            `✨ Estado: ${niveles}`,
+        ]), mentions: [m.sender, u.married] }, { quoted: m });
         break;
     }
 
