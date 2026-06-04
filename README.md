@@ -1,111 +1,183 @@
-# KimdanBot-MD v3.0 — Eventos y comandos extendidos
+<div align="center">
 
-## Lo nuevo en esta versión
+# 💜 KimdanBot-MD
 
-### 📡 Nuevos eventos manejados desde `kim/announcements.js`
+### Bot de WhatsApp Multi-Device · Temática BL / Yaoi / Jinx
 
-| Evento de Baileys | Qué hace |
+*Economía Jinx · Gacha BL · SubBots · Moderación LID-aware · 338 comandos*
+
+`Baileys v7` · `Node ≥ 20` · `ESM` · `MongoDB opcional`
+
+</div>
+
+---
+
+## 📖 ¿Qué es?
+
+KimdanBot-MD es un bot de WhatsApp construido sobre **Baileys v7** con una
+arquitectura modular propia. Está tematizado en torno al universo **BL / Yaoi**
+(con *Jinx* como insignia) e incluye un sistema económico completo, gacha de
+personajes, sub-bots, herramientas de moderación y un catálogo de **338 comandos**
+repartidos en 16 categorías.
+
+Toda la lógica vive en `kim/`, separada por responsabilidades: tocar un módulo
+no afecta a los demás.
+
+---
+
+## ✨ Características principales
+
+| Sistema | Descripción |
 |---|---|
-| `group-participants.update` | Welcome / bye / promote / demote con banners |
-| `groups.update` | Avisa cuando cambia nombre, descripción o foto del grupo |
-| **`call`** | Anti-llamada: rechaza automático y opcionalmente bloquea |
-| **`messages.upsert` (cache)** | Guarda mensajes para anti-delete (200/chat, TTL 1h) |
-| **`messages.update`** | Anti-delete (recupera borrado) + log de ediciones |
-| **`presence.update`** | Avisa cuando un AFK vuelve a estar online |
-| **`contacts.update`** | Log silencioso de cambios de foto/nombre |
+| 💰 **Economía** | 💜 Jinx Coins (JX) · 💎 Heart Gems (HG) · 🤝 Affinity Points (AP) |
+| 🏦 **Banco completo** | depósito, retiro, historial, inversión, interés diario y rankings |
+| 🎴 **Gacha BL** | 70 personajes (Jinx, manhwa, manga y anime BL) con rarezas y colección |
+| 👑 **Rango VIP** | x2 en trabajar y minar; lista fija en `settings.js` o por comando |
+| 🤖 **SubBots** | arquitectura aislada con reconexión automática y persistencia |
+| 🛡️ **Moderación** | kick LID-aware, warns, anti-link, anti-spam, anti-fake, anti-toxic |
+| 🎉 **Bienvenidas masivas** | agrupa entradas en una ventana de 60 s (sin spam) |
+| 📊 **Estadísticas** | `.contar`, top activos e inactivos con paginación (grupos grandes) |
+| 🔎 **Búsqueda BL** | manga/manhwa/novelas vía AniList y MangaDex (fuentes legales) |
+| 🎨 **Stickers** | conversión + sistema de packs (metadata, favoritos, público/privado) |
+| 🌐 **Multilenguaje** | capa de traducción opt-in (LibreTranslate) por usuario/grupo/global |
+| 📚 **Biblioteca** | catálogo de libros con MongoDB (degradación elegante sin Mongo) |
 
-Todo en `kim/announcements.js`. Modificarlo NO afecta dispatcher ni comandos.
+---
 
-### 🛠️ 13 comandos nuevos usando la API completa de Baileys
+## 🚀 Instalación
 
-| Comando | Categoría | Hace |
-|---|---|---|
-| `.check <num>` | tools | `onWhatsApp` — verifica si existe en WhatsApp |
-| `.bio <@user>` | tools | `fetchStatus` — lee la biografía |
-| `.fotoperfil <@user>` | tools | `profilePictureUrl` — descarga foto HD |
-| `.business <@user>` | tools | `getBusinessProfile` — info de empresa |
-| `.setppgrupo` | group | `updateProfilePicture` — foto del grupo (responde a imagen) |
-| `.setppbot` | owner | `updateProfilePicture` — foto del bot |
-| `.encuesta P\|A\|B\|C` | group | `sendMessage({poll})` — crea encuestas |
-| `.creargrupo <nombre>` | owner | `groupCreate` — crea grupo desde el bot |
-| `.antillamada on/off` | config | rechaza llamadas automáticas |
-| `.bloquearllamada on/off` | config | además bloquea al que llama |
-| `.antidelete on/off` | config | recupera mensajes borrados (por grupo) |
-| `.editlog on/off` | config | log de ediciones (por grupo) |
-| `.notifychanges on/off` | config | avisos de cambios del grupo |
-
-### Total final
-
-- **108 comandos** registrados (213 con aliases)
-- **12 categorías** en el menú auto-generado
-- **7 listeners** de eventos cubiertos
-
-### Categorías (por cantidad de comandos)
-
-```
-config: 21    media:    4
-group:  19    game:     4
-owner:  16    download: 3
-info:   10    misc:     3
-tools:   9    search:   2
-rpg:     9    sticker:  4
-fun:     8
-```
-
-## Cómo aplicar
+> Requiere **Node.js 20 o superior**.
 
 ```bash
-cd ~
-rm -rf KimdanBot-MD/authFolder      # OBLIGATORIO
-unzip -o x-v7.zip -d KimdanBot-MD/
-cd KimdanBot-MD
-rm -rf node_modules package-lock.json
+# 1) Instalar dependencias
 npm install
+
+# 2) (Opcional) Configurar variables de entorno
+cp .env.example .env
+#   edita .env y añade tu MONGODB_URI si quieres usar la biblioteca
+
+# 3) Iniciar el bot
 npm start
+#   o:  node index.js
 ```
 
-## Cómo agregar más cosas
+Al arrancar, elige el método de vinculación:
 
-### Agregar un anuncio para un evento nuevo
+- **Código de emparejamiento** — escribe tu número y vincula con
+  *WhatsApp ▸ Dispositivos vinculados ▸ Vincular con número de teléfono*.
+- **Código QR** — escanéalo desde *Dispositivos vinculados ▸ Vincular dispositivo*.
 
-En `kim/announcements.js`:
+---
 
-```js
-async function onChatsUpdate(conn, updates) {
-    // tu lógica
-}
+## ⚙️ Configuración (`settings.js`)
 
-// dentro de attachAnnouncements():
-conn.ev.on('chats.update', (updates) =>
-    onChatsUpdate(conn, updates).catch(err =>
-        console.error('[chats]', err?.message || err)
-    )
-);
+| Variable | Para qué |
+|---|---|
+| `global.owner` | Lista de dueños `['numero','nombre',true]` |
+| `global.vip` | VIPs fijos (por defecto `[...global.owner]`) |
+| `global.botname` | Nombre que muestra el bot |
+| `global.prefix` | Prefijos de comandos (admite varios) |
+| `global.groupMemberLimit` | Límite de miembros para aprobar solicitudes (def. 1024) |
+
+Variables de entorno (`.env`):
+
+| Variable | Para qué |
+|---|---|
+| `MONGODB_URI` | Conexión para el sistema de biblioteca (opcional) |
+| `LIBRETRANSLATE_URL` | Endpoint de traducción (opcional) |
+| `BOT_LANG` | Idioma global por defecto |
+
+---
+
+## 🗂️ Estructura del proyecto
+
+```
+KimdanBot-MD/
+├── index.js               Punto de entrada (conexión, pairing, reconexión)
+├── settings.js            Owners, VIPs, prefijos, configuración global
+├── kim/
+│   ├── handler.js         Despachador (permisos LID-aware, anti-saturación)
+│   ├── registry.js        Registro de comandos + generador de menú
+│   ├── db.js              Base de datos JSON (escritura atómica, coalescing)
+│   ├── commands*.js       Los 338 comandos (arquitectura case/switch)
+│   ├── theme.js           Monedas, rarezas, 70 personajes BL, VIP
+│   ├── media.js           GIFs locales + caché (nekos.best de respaldo)
+│   ├── ui.js              Helpers de presentación (cajas, barras)
+│   ├── announcements.js   Welcome/bye/promote + anti-* + bienvenidas masivas
+│   ├── middleware.js      Anti-link / anti-spam / anti-fake / AFK
+│   ├── subbots/           Sistema de sub-bots (sesión, gestor, persistencia)
+│   └── idiomas/           Traducción y cadenas localizadas
+├── libs/biblioteca.js     Modelo MongoDB de libros
+└── media/gifs/<categoría> Tus GIFs propios por categoría (ver su README)
 ```
 
-### Agregar un comando
+---
 
-En `kim/commands.js`:
+## 📋 Categorías de comandos
 
-```js
-export const miCmd = command({
-    name: 'micmd',
-    aliases: ['mc'],
-    category: 'fun',
-    description: 'Lo que hace',
-}, async (conn, m, args, text) => {
-    return m.reply('hola');
-});
+Usa `.menu` para verlas todas en el chat. Resumen:
+
+`INFO` · `OWNER` · `ADMIN` · `GRUPOS` · `CONFIG` · `MEDIA` ·
+`🎨 STICKERS` · `🔎 BÚSQUEDAS` · `📥 DESCARGAS` · `🎮 RPG` ·
+`🎴 GACHA BL` · `🎲 JUEGOS` · `🌸 ANIME` · `😄 DIVERSIÓN` ·
+`🛠️ HERRAMIENTAS` · `OTROS`
+
+### Comandos destacados
+
+```
+Economía     .balance  .work  .mine  .daily  .pay  .slot
+Banco        .bank  .deposit  .retirar  .invest  .interest  .banklog
+Rankings     .topmoney  .topbank  .rich
+Gacha BL     .roll  .claim  .harem  .coleccion  .personajes
+VIP (owner)  .setvip  .delvip  .viplist  .addmoney  .adddiamond
+Moderación   .kick  .warn  .ban  (LID-aware, protege admins)
+Stats        .contar  .topactivos  .topinactivo
+Stickers     .sticker  .newpack  .stickeradd  .getpack  .stickerpacks
+Búsqueda BL  .blsearch  .manhwasearch  .novelbl  .mangabl
+SubBots      .serbot  .bots  .stop
+Owner        .grupos  .restart  .update
 ```
 
-Aparece solo en `.menu` en la sección DIVERSIÓN.
+---
 
-## Diagnóstico
+## 🎞️ Añadir tus propios GIFs
 
-Logs claros en consola:
-- `[MSG]` mensajes recibidos
-- `[announcements]` eventos de grupo
-- `[anti-call]` llamadas rechazadas
-- `[anti-delete]` mensajes recuperados
-- `[Handler]` errores de comandos
-- `[CONEXIÓN]` cambios de conexión
+Coloca archivos `.mp4` / `.gif` / `.webp` en `media/gifs/<categoría>/`
+(usa el **nombre de categoría**, no el del comando — varios comandos comparten
+carpeta). Tus archivos tienen prioridad sobre la fuente remota y funcionan sin
+internet. El mapeo completo comando → carpeta está en `media/gifs/README.md`.
+
+---
+
+## 🧱 Estabilidad
+
+- **Caché por TTL** (NodeCache sin `maxKeys`): nunca lanza `Cache max keys exceeded`.
+- **Permisos LID solo en comandos**: los mensajes normales no saturan el event loop.
+- **Estructuras acotadas**: todos los Map/caché se podan por tiempo o LRU.
+- **Reconexión** con backoff y crash-guards globales.
+
+---
+
+## 📦 Dependencias
+
+`baileys` · `@hapi/boom` · `axios` · `node-cache` · `pino` · `sharp` ·
+`qrcode` · `qrcode-terminal` · `yt-search` · `moment-timezone` · `form-data` ·
+`cfonts` · `chalk` · `mongoose` · `lodash`
+
+---
+
+## ⚠️ Notas
+
+- El sistema de biblioteca necesita MongoDB; sin `MONGODB_URI` el resto del bot
+  funciona igual y esos comandos avisan que falta configuración.
+- Algunos comandos de descarga/IA dependen de APIs externas: si una no responde,
+  el comando degrada con un mensaje claro en lugar de fallar.
+- El bot **no incluye** contenido +18: la temática BL/Yaoi se sirve como SFW.
+
+---
+
+<div align="center">
+
+💜 *KimdanBot-MD · Hecho con cariño para la comunidad BL* 💜
+
+</div>
