@@ -176,6 +176,52 @@ internet. El mapeo completo comando → carpeta está en `media/gifs/README.md`.
 
 ---
 
+
+---
+
+## ❓ FAQ — Errores comunes
+
+**"No eres owner" en privado siendo owner**
+Asegúrate de que tu número esté en `global.owner` en `settings.js` en formato
+`['593xxxxxxxxx', 'TuNombre', true]` (solo dígitos, con código de país). El bot
+resuelve LID↔PN automáticamente.
+
+**El bot no responde comandos en un grupo muy activo**
+Resuelto: los caches usan TTL (no `maxKeys`) y los permisos pesados solo se
+calculan en comandos. Si persiste, comparte el log de la consola.
+
+**`Cache max keys amount exceeded`**
+Ya no debería ocurrir (se eliminó `maxKeys` de todos los NodeCache). Si aparece,
+revisa que no tengas una versión vieja de `index.js`.
+
+**Los comandos de libros dicen que falta configuración**
+Necesitan `MONGODB_URI` en `.env`. El resto del bot funciona sin Mongo.
+
+**Una descarga/búsqueda falla**
+Depende de APIs externas; si una cae, el comando avisa. Reintenta o usa otra.
+
+**El bot no es admin pero aparezco como admin**
+`#grupos` verifica el estado real intentando leer el enlace; si WhatsApp lo
+devuelve, el bot es admin aunque la metadata estuviera desactualizada.
+
+---
+
+## 🛠️ Documentación para desarrolladores
+
+Para arquitectura, sistema de comandos, economía, GIFs y SubBots, ver
+**[DOCS.md](./DOCS.md)**.
+
+---
+
+## 💖 Créditos
+
+- **Base**: Baileys (WhiskeySockets) y la comunidad de bots MD.
+- **Tema y comandos BL/Jinx**: personalización propia.
+- **Fuentes BL**: AniList y MangaDex (APIs públicas) para búsquedas.
+- Hecho con cariño para la comunidad BL/Yaoi 💜
+
+---
+
 <div align="center">
 
 💜 *KimdanBot-MD · Hecho con cariño para la comunidad BL* 💜
