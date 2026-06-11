@@ -107,14 +107,16 @@ export class Handler {
     async _isOwnerAsync(jid, jidAlt) {
         if (this.ownerSet.size === 0) return false;
         const candidates = new Set();
+        const lm = this.conn?.signalRepository?.lidMapping;
         for (const j of [jid, jidAlt].filter(Boolean)) {
             candidates.add(String(j).split('@')[0]);
-            // Si es LID, intentar resolver a PN
+            // LID → PN
             if (j.endsWith('@lid')) {
-                try {
-                    const pn = await this.conn?.signalRepository?.lidMapping?.getPNForLID?.(j);
-                    if (pn) candidates.add(String(pn).split('@')[0]);
-                } catch { /* */ }
+                try { const pn = await lm?.getPNForLID?.(j); if (pn) candidates.add(String(pn).split('@')[0]); } catch { /* */ }
+            }
+            // PN → LID (por si el owner está listado por su LID, caso raro pero posible)
+            if (j.endsWith('@s.whatsapp.net')) {
+                try { const lid = await lm?.getLIDForPN?.(j); if (lid) candidates.add(String(lid).split('@')[0]); } catch { /* */ }
             }
         }
         for (const num of candidates) {

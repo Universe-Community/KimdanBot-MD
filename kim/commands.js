@@ -70,6 +70,14 @@ const needOwner = (m) => {
     return true;
 };
 
+// Doble validación: owner Y chat privado. Para comandos sensibles
+// (config global del bot, mantenimiento) que no deben usarse en grupos.
+const needOwnerPrivate = (m) => {
+    if (!m.isOwner) { m.reply(global.mess?.owner || '⚠️ Solo el propietario.'); return false; }
+    if (m.isGroup) { m.reply('🔒 Este comando solo puede usarse en el *chat privado* con el bot, por seguridad.'); return false; }
+    return true;
+};
+
 const resolveTarget = (m, text) => {
     if (m.mentionedJid?.[0]) return m.mentionedJid[0];
     if (m.quoted?.sender) return m.quoted.sender;
@@ -492,7 +500,7 @@ export async function execute(conn, m, rawCommand, args, text) {
             }
 
             case 'setbio': {
-                if (!needOwner(m)) return;
+                if (!needOwnerPrivate(m)) return;
                 if (!text) return m.reply('Uso: .setbio <nuevo texto>');
                 try {
                     await conn.updateProfileStatus(text);
@@ -502,7 +510,7 @@ export async function execute(conn, m, rawCommand, args, text) {
             }
 
             case 'setnamebot': {
-                if (!needOwner(m)) return;
+                if (!needOwnerPrivate(m)) return;
                 if (!text) return m.reply('Uso: .setnamebot <nuevo nombre>');
                 try {
                     await conn.updateProfileName(text);
@@ -534,7 +542,7 @@ export async function execute(conn, m, rawCommand, args, text) {
             }
 
             case 'setppbot': {
-                if (!needOwner(m)) return;
+                if (!needOwnerPrivate(m)) return;
                 const target = m.quoted || m;
                 const mime = target.msg?.mimetype || '';
                 if (!mime.startsWith('image/')) return m.reply('Responde a una imagen con el comando.');

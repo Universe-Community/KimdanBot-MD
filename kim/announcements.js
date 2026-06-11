@@ -302,20 +302,36 @@ async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = '
 // Cola de bienvenidas por grupo para agrupar entradas masivas.
 //   chatJid → { members:Set<jid>, timer, conn, meta, subject, botName }
 const _welcomeQueue = new Map();
-const WELCOME_WINDOW_MS = parseInt(process.env.WELCOME_WINDOW_MS) || 60000; // ventana de agrupación: 60s
+const WELCOME_WINDOW_MS = parseInt(process.env.WELCOME_WINDOW_MS) || 5000; // agrupación: máx 5s
 
 function queueWelcome(conn, chatJid, newcomers, meta, subject, botName) {
     let q = _welcomeQueue.get(chatJid);
     if (!q) {
-        q = { members: new Set(), conn, meta, subject, botName, timer: null };
+        q = { members: new Set(), conn, meta, subject, botName, timer: null, firstAt: Date.now() };
         _welcomeQueue.set(chatJid, q);
     }
     // Mantener datos más recientes (metadata puede haber cambiado).
     q.conn = conn; q.meta = meta || q.meta; q.subject = subject || q.subject; q.botName = botName || q.botName;
     for (const j of newcomers) q.members.add(j);
-    // Reiniciar la ventana: cada nueva entrada extiende el agrupamiento.
+    // Ventana con TOPE de 5s desde el PRIMER ingreso: las entradas siguientes
+    // se suman a la misma bienvenida, pero nunca se espera más de 5s en total
+    // (evita la espera excesiva que había con la ventana deslizante de 60s).
     if (q.timer) clearTimeout(q.timer);
-    q.timer = setTimeout(() => { flushWelcome(chatJid).catch(e => console.error('[ann] flushWelcome:', e?.message || e)); }, WELCOME_WINDOW_MS);
+    const elapsed = Date.now() - q.firstAt;
+    const wait = Math.max(0, Math.min(WELCOME_WINDOW_MS, WELCOME_WINDOW_MS - elapsed));
+    q.timer = setTimeout(() => { flushWelcome(chatJid).catch(e => console.error('[ann] flushWelcome:', e?.message || e)); }, wait);
+}
+
+/**
+ * Fuerza el envío INMEDIATO de la bienvenida agrupada de un grupo (sin esperar
+ * la ventana de 5s). Lo usa el comando #aprobar/#aprobarall: tras aprobar, la
+ * bienvenida debe sentirse instantánea. Si no hay nada en cola, no hace nada.
+ * Se da un pequeño margen para que los eventos group-participants.update de los
+ * aprobados lleguen y se encolen antes de vaciar.
+ */
+export async function flushWelcomeNow(chatJid, graceMs = 800) {
+    if (graceMs > 0) await new Promise(r => setTimeout(r, graceMs));
+    return flushWelcome(chatJid);
 }
 
 async function flushWelcome(chatJid) {

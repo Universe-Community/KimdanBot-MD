@@ -172,6 +172,20 @@ export function smsg(conn, raw, store) {
     m.senderAlt = (conn.decodeJid || (j => j))(
         m.key.participantAlt || m.key.participantPn || m.sender
     );
+    // En DMs no llega participantAlt, así que si m.sender quedó en LID, el
+    // owner-check (que compara contra global.owner en PN) podía fallar. Aquí
+    // intentamos resolver el par cruzado vía lidMapping de forma síncrona si
+    // está cacheado; si no, _isOwnerAsync hará la resolución async.
+    if (!m.isGroup && m.senderAlt === m.sender && conn.signalRepository?.lidMapping) {
+        try {
+            const lm = conn.signalRepository.lidMapping;
+            if (m.sender.endsWith('@lid') && lm.getPNForLIDSync) {
+                const pn = lm.getPNForLIDSync(m.sender); if (pn) m.senderAlt = conn.decodeJid(pn);
+            } else if (m.sender.endsWith('@s.whatsapp.net') && lm.getLIDForPNSync) {
+                const lid = lm.getLIDForPNSync(m.sender); if (lid) m.senderAlt = conn.decodeJid(lid);
+            }
+        } catch { /* _isOwnerAsync cubrirá el caso async */ }
+    }
     m.isLid = m.sender?.endsWith?.('@lid') || false;
 
     m.isBaileys = m.id?.startsWith('BAE5') || m.id?.startsWith('3EB0');

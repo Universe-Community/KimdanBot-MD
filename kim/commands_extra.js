@@ -341,6 +341,8 @@ export async function execute(conn, m, cmd, args, text) {
         }
         if (failed.length) msg += `\n❌ Fallaron ${failed.length} (reintenta más tarde).`;
         await m.reply(msg);
+        // Bienvenida INSTANTÁNEA: tras aprobar, vacía la cola sin esperar los 5s.
+        if (approved > 0) { try { const { flushWelcomeNow } = await import('./announcements.js'); flushWelcomeNow(m.chat).catch(() => {}); } catch { /* */ } }
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
         break;
     }
@@ -365,6 +367,7 @@ export async function execute(conn, m, cmd, args, text) {
         }
         const pending = reqs.length - approved;
         await m.reply(`✅ Solicitudes aprobadas: ${approved}${pending > 0 ? `\n⚠️ Pendientes: ${pending}\nℹ️ Límite de WhatsApp (${WA_LIMIT}) alcanzado.` : ''}`);
+        if (approved > 0) { try { const { flushWelcomeNow } = await import('./announcements.js'); flushWelcomeNow(m.chat).catch(() => {}); } catch { /* */ } }
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
         break;
     }

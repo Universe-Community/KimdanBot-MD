@@ -9,6 +9,22 @@ import { box, bar, softbox, face } from './ui.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────
 const needGroup = (m) => { if (!m.isGroup) { m.reply('⚠️ Solo en grupos.'); return false; } return true; };
+
+// Cache de rankings: recorrer toda la DB de usuarios en cada .topmoney/.rich
+// es O(n) y a escala (decenas de miles de usuarios) se nota si varios lo piden
+// seguidos. Cacheamos el resultado por clave durante unos segundos; los datos
+// económicos cambian poco entre consultas consecutivas.
+const _rankCache = new Map(); // key → { rows, ts }
+const RANK_TTL = 15000;
+function cachedRank(key, builder) {
+    const now = Date.now();
+    const c = _rankCache.get(key);
+    if (c && now - c.ts < RANK_TTL) return c.rows;
+    const rows = builder();
+    _rankCache.set(key, { rows, ts: now });
+    if (_rankCache.size > 50) { for (const [k, v] of _rankCache) if (now - v.ts > RANK_TTL) _rankCache.delete(k); }
+    return rows;
+}
 const needAdmin = (m) => { if (!needGroup(m)) return false; if (!m.isSenderAdmin && !m.isOwner) { m.reply('⚠️ Solo administradores.'); return false; } return true; };
 const target = (m, text) => {
     if (m.mentionedJid?.[0]) return m.mentionedJid[0];
@@ -218,19 +234,19 @@ export async function execute(conn, m, cmd, args, text) {
         break;
     }
     case 'topmoney': {
-        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.money || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        const e = cachedRank('topmoney', () => Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.money || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10));
         if (!e.length) return m.reply('Sin datos.');
         await conn.sendMessage(m.chat, { text: box('💜 TOP CARTERA (JX)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
         break;
     }
     case 'topbank': {
-        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.bank || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        const e = cachedRank('topbank', () => Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: u.bank || 0 })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10));
         if (!e.length) return m.reply('Sin datos bancarios.');
         await conn.sendMessage(m.chat, { text: box('🏦 TOP BANCO (JX)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
         break;
     }
     case 'rich': {
-        const e = Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: (u.money||0)+(u.bank||0) })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10);
+        const e = cachedRank('rich', () => Object.entries(db.data.users || {}).map(([jid, u]) => ({ jid, n: (u.money||0)+(u.bank||0) })).filter(x => x.n > 0).sort((a,b)=>b.n-a.n).slice(0,10));
         if (!e.length) return m.reply('Sin datos.');
         await conn.sendMessage(m.chat, { text: box('👑 TOP MÁS RICOS (patrimonio)', e.map((x,i)=>`${i+1}. @${x.jid.split('@')[0]} → ${fmtMoney(x.n)}`)), mentions: e.map(x=>x.jid) }, { quoted: m });
         break;
