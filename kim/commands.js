@@ -515,7 +515,25 @@ export async function execute(conn, m, rawCommand, args, text) {
                 try {
                     await conn.updateProfileName(text);
                     await m.reply('✅ Nombre del bot actualizado.');
-                } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
+                } catch (e) {
+                    const msg = String(e?.message || e);
+                    // "myAppStateKey not present": faltan las app-state sync keys
+                    // en la sesión actual. Recuperación real: pedirlas al teléfono
+                    // con resyncAppState y reintentar UNA vez (no se oculta el error;
+                    // si el reintento también falla, se informa con la causa).
+                    if (/myAppStateKey|not present|isMissingKey/i.test(msg) && conn.resyncAppState) {
+                        try {
+                            await m.reply('🔄 Sincronizando claves de la sesión, un momento…');
+                            await conn.resyncAppState(['regular_high', 'regular_low', 'regular', 'critical_block', 'critical_unblock_low'], false);
+                            await conn.updateProfileName(text);
+                            await m.reply('✅ Nombre del bot actualizado (tras sincronizar claves).');
+                        } catch (e2) {
+                            await m.reply('❌ No se pudo cambiar el nombre: faltan las claves de app-state y el resync no las recuperó.\n\nℹ️ Esto se corrige solo al reconectar el bot (las claves llegan en la sincronización inicial). Reinicia el bot una vez y vuelve a intentarlo.');
+                        }
+                    } else {
+                        await m.reply('❌ ' + msg);
+                    }
+                }
                 break;
             }
 
