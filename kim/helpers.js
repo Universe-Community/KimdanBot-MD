@@ -166,17 +166,20 @@ export function smsg(conn, raw, store) {
         m.fromMe ? conn.user?.id : (m.key.participant || m.chat)
     );
 
-    // ── LID/PN: en v7 viene `participantAlt` como el JID alternativo.
-    // Si participant es LID, participantAlt es PN, y viceversa. Si no
-    // viene, lo dejamos como m.sender.
-    m.senderAlt = (conn.decodeJid || (j => j))(
-        m.key.participantAlt || m.key.participantPn || m.sender
-    );
-    // En DMs no llega participantAlt, así que si m.sender quedó en LID, el
-    // owner-check (que compara contra global.owner en PN) podía fallar. Aquí
-    // intentamos resolver el par cruzado vía lidMapping de forma síncrona si
-    // está cacheado; si no, _isOwnerAsync hará la resolución async.
-    if (!m.isGroup && m.senderAlt === m.sender && conn.signalRepository?.lidMapping) {
+    // ── LID/PN: el JID alternativo (forma cruzada PN↔LID).
+    //   • En GRUPOS viene en key.participantAlt / participantPn.
+    //   • En DMs (chat privado) el sender sale de remoteJid, así que el par
+    //     viene en key.remoteJidAlt. Sin esto, si el owner escribe en privado
+    //     y WhatsApp lo identifica por su LID, m.senderAlt quedaba igual al
+    //     LID y el owner-check (que compara contra el PN de global.owner)
+    //     fallaba con un falso "No eres owner". ESTA era la causa raíz.
+    const altRaw = m.isGroup
+        ? (m.key.participantAlt || m.key.participantPn)
+        : (m.fromMe ? null : (m.key.remoteJidAlt || m.key.participantAlt || m.key.participantPn));
+    m.senderAlt = (conn.decodeJid || (j => j))(altRaw || m.sender);
+
+    // Si aún quedó sin par cruzado, intenta lidMapping síncrono si está cacheado.
+    if (m.senderAlt === m.sender && conn.signalRepository?.lidMapping) {
         try {
             const lm = conn.signalRepository.lidMapping;
             if (m.sender.endsWith('@lid') && lm.getPNForLIDSync) {

@@ -122,6 +122,20 @@ export class Handler {
         for (const num of candidates) {
             if (num && this.ownerSet.has(num)) return true;
         }
+        // Última red de seguridad: si llegó un LID y nada coincidió (lidMapping
+        // vacío y sin remoteJidAlt), intenta resolver el PN real vía onWhatsApp.
+        // Solo se ejecuta cuando todo lo demás falló, así que no añade latencia
+        // al caso normal.
+        try {
+            const lid = [jid, jidAlt].find(j => j && j.endsWith('@lid'));
+            if (lid && this.conn?.onWhatsApp) {
+                const res = await this.conn.onWhatsApp(lid);
+                for (const r of (Array.isArray(res) ? res : [])) {
+                    const num = String(r?.jid || r?.id || '').split('@')[0];
+                    if (num && this.ownerSet.has(num)) return true;
+                }
+            }
+        } catch { /* */ }
         return false;
     }
 
