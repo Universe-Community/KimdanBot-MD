@@ -71,7 +71,7 @@ export class SubBotSession extends EventEmitter {
         this.createdAt = Date.now();
         this.lastOpenAt = 0;
         this._msgCache = new LRU(200);
-        this._groupCache = new NodeCache({ stdTTL: 300, useClones: false, maxKeys: 500 });
+        this._groupCache = new NodeCache({ stdTTL: 600, useClones: false, checkperiod: 120 });
         this._listeners = [];     // [ [emitter, event, fn] ] para limpieza total
         this._reconnectTimer = null;
         this._destroyed = false;
@@ -104,7 +104,7 @@ export class SubBotSession extends EventEmitter {
             auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
             markOnlineOnConnect: false,
             syncFullHistory: false,
-            msgRetryCounterCache: new NodeCache({ stdTTL: 60, maxKeys: 1000 }),
+            msgRetryCounterCache: new NodeCache({ stdTTL: 60, useClones: false, checkperiod: 30 }),
             cachedGroupMetadata: async (jid) => this._groupCache.get(jid),
             getMessage: async (key) => {
                 const k = `${jidNormalizedUser(key.remoteJid)}:${key.id}`;
