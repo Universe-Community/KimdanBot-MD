@@ -236,8 +236,20 @@ async function crearSocket({ version, useQR }) {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, logger),
         },
-        markOnlineOnConnect: true,
+        // CAUSA RAÍZ de "myAppStateKey not present": con markOnlineOnConnect:true
+        // el bot se marca ONLINE al conectar; cuando un cliente está online, el
+        // teléfono NO entrega las notificaciones que tenía en cola (offline),
+        // entre ellas el appStateSyncKeyShare con las claves de app-state que
+        // chatModify → updateProfileName necesita. Así, creds.myAppStateKeyId
+        // queda seteado pero la clave nunca llega al store y setnamebot falla.
+        // FIX: false → el bot recibe primero TODO lo pendiente (incluidas las
+        // claves) antes de marcarse online. Sigue respondiendo igual.
+        markOnlineOnConnect: false,
         syncFullHistory: false,
+        // Procesa el history-sync inicial (otra vía por la que pueden venir las
+        // claves de app-state). No descarga el historial completo (eso lo
+        // controla syncFullHistory, que queda en false).
+        shouldSyncHistoryMessage: () => true,
         generateHighQualityLinkPreview: false,
         shouldIgnoreJid: (jid) => jid?.includes?.('@broadcast'),
         msgRetryCounterCache,
