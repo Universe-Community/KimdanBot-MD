@@ -528,7 +528,15 @@ export async function execute(conn, m, rawCommand, args, text) {
                             await conn.updateProfileName(text);
                             await m.reply('✅ Nombre del bot actualizado (tras sincronizar claves).');
                         } catch (e2) {
-                            await m.reply('❌ No se pudo cambiar el nombre: faltan las claves de app-state y el resync no las recuperó.\n\nℹ️ Esto se corrige solo al reconectar el bot (las claves llegan en la sincronización inicial). Reinicia el bot una vez y vuelve a intentarlo.');
+                            await m.reply(
+                                '❌ No se pudo cambiar el nombre: tu sesión nunca recibió las *claves de app-state* del teléfono.\n\n' +
+                                'ℹ️ *Causa*: la sesión se vinculó cuando el bot se marcaba en línea de inmediato, y WhatsApp no llegó a enviar esas claves.\n\n' +
+                                '✅ *Solución* (ya viene corregida en esta versión):\n' +
+                                '1. Detén el bot.\n' +
+                                '2. Cierra la sesión vinculada desde tu teléfono (WhatsApp → Dispositivos vinculados).\n' +
+                                '3. Vuelve a iniciar el bot y *re-vincula* (QR o código).\n\n' +
+                                'Al re-vincular, el teléfono enviará las claves y .setnamebot funcionará.'
+                            );
                         }
                     } else {
                         await m.reply('❌ ' + msg);

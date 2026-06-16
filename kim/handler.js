@@ -33,6 +33,7 @@ import './commands_pack4.js'; // ← perfiles, admin, utilidades, descargas, sub
 import './commands_pack5.js'; // ← sistema BL: búsqueda manga/manhwa/novelas + colección
 import './commands_pack6.js'; // ← sistema completo de stickers y packs
 import './commands_pack7.js'; // ← VIP + comandos owner de economía (dar/quitar dinero, exp, diamantes)
+import './commands_pack8.js'; // ← gestión de comunidades (auditoría/limpieza) + multikick
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 
