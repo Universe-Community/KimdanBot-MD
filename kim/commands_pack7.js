@@ -170,11 +170,11 @@ export async function execute(conn, m, cmd, args, text) {
         let all;
         // Suprime anuncios de groups.update mientras consultamos (las consultas
         // masivas pueden hacer que WhatsApp reenvíe metadata y dispare anuncios).
-        global.__suppressGroupAnnounce = Date.now() + 30000;
+        global.__suppressGroupAnnounce = Date.now() + 60000;
         try { all = await conn.groupFetchAllParticipating(); }
-        catch (e) { global.__suppressGroupAnnounce = 0; return m.reply('❌ No pude obtener la lista de grupos: ' + (e?.message || e)); }
+        catch (e) { return m.reply('❌ No pude obtener la lista de grupos: ' + (e?.message || e)); }
         const groups = Object.values(all || {});
-        if (!groups.length) { global.__suppressGroupAnnounce = 0; return m.reply('El bot no está en ningún grupo.'); }
+        if (!groups.length) { return m.reply('El bot no está en ningún grupo.'); }
 
         // CAUSA RAÍZ del falso "No admin": antes solo se comparaba con
         // conn.user.id (PN). En v7 el bot puede aparecer en participants con
@@ -204,7 +204,7 @@ export async function execute(conn, m, cmd, args, text) {
         const totalUsers = Object.keys(db.data.users || {}).length;
 
         const pages = Math.ceil(totalGroups / PAGE);
-        if (page > pages) { global.__suppressGroupAnnounce = 0; return m.reply(`Solo hay ${pages} página(s). Usa .grupos ${pages}.`); }
+        if (page > pages) { return m.reply(`Solo hay ${pages} página(s). Usa .grupos ${pages}.`); }
         const start = (page - 1) * PAGE;
         const slice = ordered.slice(start, start + PAGE);
 
@@ -233,7 +233,7 @@ export async function execute(conn, m, cmd, args, text) {
             else block += `\n   🔒 Sin acceso al enlace`;
             lines.push(block);
         }
-        global.__suppressGroupAnnounce = 0; // fin de la ventana de supresión
+        // la ventana de supresión expira sola por tiempo (cubre eventos async)
 
         const header =
 `📊 *KimdanBot está en ${totalGroups} grupos*
@@ -259,10 +259,10 @@ export async function execute(conn, m, cmd, args, text) {
             targetId = arg;
         } else {
             // Buscar por nombre (confirma mostrando el match).
-            global.__suppressGroupAnnounce = Date.now() + 15000;
+            global.__suppressGroupAnnounce = Date.now() + 60000;
             let all = {};
             try { all = await conn.groupFetchAllParticipating(); } catch { /* */ }
-            global.__suppressGroupAnnounce = 0;
+            // (la ventana de supresión expira sola por tiempo)
             const matches = Object.values(all).filter(g => (g.subject || '').toLowerCase().includes(arg.toLowerCase()));
             if (!matches.length) return m.reply(`No encontré ningún grupo que contenga "${arg}".`);
             if (matches.length > 1) {

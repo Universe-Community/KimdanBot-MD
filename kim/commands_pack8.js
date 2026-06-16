@@ -66,7 +66,9 @@ async function buildCommunity(conn, chatJid) {
 
     // Subgrupos = los que enlazan a esta comunidad y NO son el anuncio.
     const linked = groups.filter(g => g.linkedParent === communityJid);
-    // El grupo de anuncios: el que es announce de la comunidad (o el padre).
+    // El grupo de anuncios de la comunidad: es donde residen los miembros
+    // "solo comunidad" y, MUY IMPORTANTE, es el grupo DESDE EL QUE se expulsa
+    // (WhatsApp no permite expulsar desde la comunidad padre directamente).
     let announce = groups.find(g => g.id === communityJid && g.isCommunityAnnounce)
         || groups.find(g => g.linkedParent === communityJid && g.isCommunityAnnounce)
         || groups.find(g => g.id === communityJid);
@@ -74,11 +76,12 @@ async function buildCommunity(conn, chatJid) {
     // Si no teníamos metadata fresca del anuncio, intentar traerla.
     let announceMeta = announce;
     if (!announceMeta || !announceMeta.participants) {
-        try { announceMeta = await conn.groupMetadata(communityJid); } catch { /* */ }
+        try { announceMeta = await conn.groupMetadata(announce?.id || communityJid); } catch { /* */ }
     }
-    const subgroups = linked.filter(g => !g.isCommunityAnnounce && g.id !== communityJid);
+    const announceJid = announceMeta?.id || announce?.id || communityJid;
+    const subgroups = linked.filter(g => !g.isCommunityAnnounce && g.id !== announceJid);
 
-    return { communityJid, announceMeta, subgroups };
+    return { communityJid, announceJid, announceMeta, subgroups };
 }
 
 /** Conjunto de números (sin @server) presentes en los subgrupos. */
@@ -100,18 +103,20 @@ async function execute(conn, m, command, args, text) {
         if (!needAdmin(m)) return;
         const PAGE = 30;
         const page = Math.max(1, parseInt((args || [])[0]) || 1);
-        global.__suppressGroupAnnounce = Date.now() + 30000;
+        global.__suppressGroupAnnounce = Date.now() + 60000;
         const comm = await buildCommunity(conn, m.chat);
-        if (!comm) { global.__suppressGroupAnnounce = 0; return m.reply('⚠️ Este chat no es parte de una comunidad accesible (¿soy miembro del grupo de anuncios?).'); }
+        if (!comm) { return m.reply('⚠️ Este chat no es parte de una comunidad accesible (¿soy miembro del grupo de anuncios?).'); }
         const announceMembers = comm.announceMeta?.participants || [];
-        if (!announceMembers.length) { global.__suppressGroupAnnounce = 0; return m.reply('No pude leer los miembros del grupo de anuncios de la comunidad.'); }
+        if (!announceMembers.length) { return m.reply('No pude leer los miembros del grupo de anuncios de la comunidad.'); }
         const inSubs = numbersInSubgroups(comm.subgroups);
-        global.__suppressGroupAnnounce = 0;
 
-        // Usuarios que están en anuncios pero en ningún subgrupo.
+        // Usuarios en anuncios pero en ningún subgrupo. Se excluyen admins y el
+        // propio bot (no son candidatos a limpieza); así la auditoría coincide
+        // con lo que realmente limpiaría .limpiarcomunidad.
+        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
         const onlyAnnounce = announceMembers
-            .map(p => ({ jid: p.id || p.jid, num: String(p.id || p.jid || '').split('@')[0].split(':')[0] }))
-            .filter(x => x.num && !inSubs.has(x.num));
+            .map(p => ({ jid: p.id || p.jid, num: String(p.id || p.jid || '').split('@')[0].split(':')[0], admin: !!p.admin }))
+            .filter(x => x.num && !inSubs.has(x.num) && !x.admin && x.num !== botNum);
 
         if (!onlyAnnounce.length) return m.reply(`✅ Auditoría: todos los miembros del anuncio participan en al menos un subgrupo.\n\n📊 Subgrupos analizados: ${comm.subgroups.length}`);
 
@@ -120,7 +125,7 @@ async function execute(conn, m, command, args, text) {
         const start = (page - 1) * PAGE;
         const slice = onlyAnnounce.slice(start, start + PAGE);
 
-        const lines = slice.map((x, i) => `${start + i + 1}. wa.me/${x.num} · 📊 0 subgrupos`);
+        const lines = slice.map((x, i) => `${start + i + 1}. https://wa.me/${x.num}  ·  📊 0 subgrupos`);
         await m.reply(
             `📊 *Auditoría de Comunidad* (${page}/${pages})\n\n` +
             `👥 Miembros en anuncios: ${announceMembers.length}\n` +
@@ -137,15 +142,22 @@ async function execute(conn, m, command, args, text) {
     case 'limpiarcomunidad': {
         if (!needAdmin(m) || !needBotAdmin(m)) return;
         const force = /^force$/i.test((text || '').trim());
-        global.__suppressGroupAnnounce = Date.now() + 30000;
+        global.__suppressGroupAnnounce = Date.now() + 60000;
         const comm = await buildCommunity(conn, m.chat);
-        if (!comm) { global.__suppressGroupAnnounce = 0; return m.reply('⚠️ Este chat no es parte de una comunidad accesible.'); }
+        if (!comm) { return m.reply('⚠️ Este chat no es parte de una comunidad accesible.'); }
         const announceMembers = comm.announceMeta?.participants || [];
         const inSubs = numbersInSubgroups(comm.subgroups);
-        global.__suppressGroupAnnounce = 0;
+
+        // Verificar que el BOT sea admin del grupo de anuncios (es de donde se
+        // expulsa). Sin esto, todos los removes fallarían con "sin permisos".
+        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
+        const botIsAdmin = announceMembers.some(p => {
+            const n = String(p.id || p.jid || '').split('@')[0].split(':')[0];
+            return n === botNum && (p.admin === 'admin' || p.admin === 'superadmin');
+        });
+        if (!botIsAdmin) return m.reply('⚠️ No soy administrador del grupo de anuncios de la comunidad, así que no puedo expulsar a nadie.\n\nℹ️ Hazme admin de la comunidad e inténtalo de nuevo.');
 
         // Candidatos: solo-anuncios, excluyendo admins, bot y owner.
-        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
         const adminNums = new Set(announceMembers.filter(p => p.admin).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
         const targets = announceMembers
             .filter(p => {
@@ -153,7 +165,6 @@ async function execute(conn, m, command, args, text) {
                 if (!num || inSubs.has(num)) return false;          // participa en subgrupos
                 if (num === botNum) return false;                    // el bot
                 if (adminNums.has(num)) return false;                // admins de la comunidad
-                const u = getUser(p.id || p.jid);
                 return true;
             })
             .map(p => p.id || p.jid);
@@ -161,15 +172,17 @@ async function execute(conn, m, command, args, text) {
         if (!targets.length) return m.reply('✅ No hay usuarios para limpiar (nadie está solo en anuncios).');
 
         if (force) {
-            const res = await massRemove(conn, comm.communityJid, targets);
-            return m.reply(`🧹 *Limpieza directa completada*\n✅ Expulsados: ${res.ok}\n❌ Fallidos: ${res.fail}`);
+            // Se expulsa desde el GRUPO DE ANUNCIOS (announceJid), NO desde la
+            // comunidad padre — WhatsApp no permite expulsar desde el padre.
+            const res = await massRemove(conn, comm.announceJid, targets, comm.announceMeta);
+            return m.reply(`🧹 *Limpieza directa completada*\n✅ Expulsados: ${res.ok}\n❌ Fallidos: ${res.fail}${res.reasons.length ? '\n\n' + res.reasons.slice(0, 8).join('\n') : ''}`);
         }
 
-        // Vista previa + confirmación.
-        _pendingClean.set(comm.communityJid, { targets, ts: Date.now(), chat: m.chat });
+        // Vista previa + confirmación. Guardamos el announceJid para el remove.
+        _pendingClean.set(comm.communityJid, { targets, announceJid: comm.announceJid, announceMeta: comm.announceMeta, ts: Date.now(), chat: m.chat });
         await m.reply(
             `⚠️ Se encontraron *${targets.length}* usuarios para eliminar (solo en anuncios).\n\n` +
-            targets.slice(0, 10).map((j, i) => `${i + 1}. wa.me/${String(j).split('@')[0].split(':')[0]}`).join('\n') +
+            targets.slice(0, 10).map((j, i) => `${i + 1}. https://wa.me/${String(j).split('@')[0].split(':')[0]}`).join('\n') +
             (targets.length > 10 ? `\n…y ${targets.length - 10} más` : '') +
             `\n\nPara proceder responde:\n*.confirmarlimpieza*\n\n_(La confirmación caduca en 5 min)_`
         );
@@ -178,6 +191,7 @@ async function execute(conn, m, command, args, text) {
 
     case 'confirmarlimpieza': {
         if (!needAdmin(m) || !needBotAdmin(m)) return;
+        global.__suppressGroupAnnounce = Date.now() + 60000;
         let meta; try { meta = await conn.groupMetadata(m.chat); } catch { /* */ }
         const communityJid = meta?.isCommunity ? m.chat : (meta?.linkedParent || m.chat);
         const pend = _pendingClean.get(communityJid);
@@ -186,8 +200,9 @@ async function execute(conn, m, command, args, text) {
             return m.reply('⌛ No hay una limpieza pendiente (o caducó). Usa .limpiarcomunidad primero.');
         }
         _pendingClean.delete(communityJid);
-        const res = await massRemove(conn, communityJid, pend.targets);
-        await m.reply(`🧹 *Limpieza completada*\n✅ Expulsados: ${res.ok}\n❌ Fallidos: ${res.fail}${res.fail ? '\n\n_Motivo común: sin permisos o ya no estaban._' : ''}`);
+        // Expulsa desde el grupo de anuncios guardado en la vista previa.
+        const res = await massRemove(conn, pend.announceJid || communityJid, pend.targets, pend.announceMeta);
+        await m.reply(`🧹 *Limpieza completada*\n✅ Expulsados: ${res.ok}\n❌ Fallidos: ${res.fail}${res.reasons.length ? '\n\n' + res.reasons.slice(0, 8).join('\n') : ''}`);
         break;
     }
 
@@ -240,19 +255,42 @@ async function execute(conn, m, command, args, text) {
     }
 }
 
-// Expulsa una lista de JIDs en lotes; devuelve { ok, fail }.
-async function massRemove(conn, groupJid, jids) {
-    let ok = 0, fail = 0;
+// Expulsa una lista de JIDs desde `groupJid`; devuelve { ok, fail, reasons }.
+// Resuelve cada JID a la forma canónica del participante y reporta el motivo
+// real de cada fallo (no un genérico).
+async function massRemove(conn, groupJid, jids, meta) {
+    let ok = 0, fail = 0; const reasons = [];
+    // Asegurar metadata del grupo de anuncios para resolución canónica.
+    if (!meta?.participants) { try { meta = await conn.groupMetadata(groupJid); } catch { /* */ } }
+    const memberNums = new Set((meta?.participants || []).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
+    const adminNums = new Set((meta?.participants || []).filter(p => p.admin).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
+
+    // Pre-filtra y resuelve canónicos; recoge motivos antes de llamar a la API.
+    const canonList = [];
+    for (const jid of jids) {
+        const num = String(jid).split('@')[0].split(':')[0];
+        if (adminNums.has(num)) { fail++; reasons.push(`wa.me/${num}: es admin`); continue; }
+        if (!memberNums.has(num)) { fail++; reasons.push(`wa.me/${num}: no pertenece al grupo`); continue; }
+        canonList.push(canonInGroup(jid, meta));
+    }
     const CHUNK = 5;
-    for (let i = 0; i < jids.length; i += CHUNK) {
-        const slice = jids.slice(i, i + CHUNK);
+    for (let i = 0; i < canonList.length; i += CHUNK) {
+        const slice = canonList.slice(i, i + CHUNK);
         try {
             const res = await conn.groupParticipantsUpdate(groupJid, slice, 'remove');
-            if (Array.isArray(res)) { for (const r of res) (r?.status === '200' || r?.status === 200) ? ok++ : fail++; }
-            else ok += slice.length;
-        } catch { fail += slice.length; }
+            if (Array.isArray(res)) {
+                for (const r of res) {
+                    const num = String(r?.jid || '').split('@')[0].split(':')[0];
+                    if (r?.status === '200' || r?.status === 200) ok++;
+                    else { fail++; reasons.push(`wa.me/${num}: ${r?.status === '403' ? 'sin permisos (bot no admin)' : 'error ' + (r?.status || '?')}`); }
+                }
+            } else ok += slice.length;
+        } catch (e) {
+            fail += slice.length;
+            reasons.push(`lote ${i / CHUNK + 1}: ${String(e?.message || e).slice(0, 40)}`);
+        }
     }
-    return { ok, fail };
+    return { ok, fail, reasons };
 }
 
 for (const meta of COMMAND_META) {
