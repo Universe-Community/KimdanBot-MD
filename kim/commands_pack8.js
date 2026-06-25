@@ -28,15 +28,46 @@ const needAdmin = (m) => {
 };
 const needBotAdmin = (m) => { if (!m.isBotAdmin) { m.reply('⚠️ Necesito ser administrador para esto.'); return false; } return true; };
 
+// ── Identidad de participantes (LID-aware) ───────────────────────────
+// En v7 un participante puede venir como LID (id=@lid) con su phoneNumber,
+// o como PN (id=@s.whatsapp.net) con su lid. Para comparar correctamente
+// entre el grupo de anuncios y los subgrupos hay que considerar TODAS las
+// formas de cada persona, no solo el número del id.
+
+/** Devuelve el conjunto de "números" (parte local) de todas las identidades de p. */
+function identityNums(p) {
+    const out = new Set();
+    for (const j of [p?.id, p?.jid, p?.lid, p?.phoneNumber].filter(Boolean)) {
+        const n = String(j).split('@')[0].split(':')[0];
+        if (n) out.add(n);
+    }
+    return out;
+}
+
+/** El número de TELÉFONO real de un participante para mostrar (wa.me). */
+async function phoneOf(conn, p) {
+    // 1) phoneNumber explícito (Baileys lo trae cuando id es LID).
+    if (p?.phoneNumber) return String(p.phoneNumber).split('@')[0].split(':')[0];
+    const id = p?.id || p?.jid || '';
+    // 2) si el id ya es PN, ese es el número.
+    if (id.endsWith('@s.whatsapp.net')) return id.split('@')[0].split(':')[0];
+    // 3) si el id es LID, intentar resolver a PN vía lidMapping.
+    if (id.endsWith('@lid')) {
+        try {
+            const pn = await conn.signalRepository?.lidMapping?.getPNForLID?.(id);
+            if (pn) return String(pn).split('@')[0].split(':')[0];
+        } catch { /* */ }
+    }
+    // 4) último recurso: la parte local del id (puede ser un LID; se marca).
+    return null; // null = no se pudo resolver el número real
+}
+
 // Resuelve un JID a la forma canónica del participante de un grupo (LID-aware).
 function canonInGroup(jid, meta) {
     const parts = meta?.participants;
     if (!Array.isArray(parts) || !jid) return jid;
-    const forms = new Set([jid]);
-    if (jid.endsWith('@lid')) forms.add(jid.replace('@lid', '@s.whatsapp.net'));
-    else if (jid.endsWith('@s.whatsapp.net')) forms.add(jid.replace('@s.whatsapp.net', '@lid'));
-    const num = String(jid).split('@')[0];
-    const p = parts.find(p => forms.has(p.id) || forms.has(p.jid) || String(p.id).split('@')[0] === num);
+    const num = String(jid).split('@')[0].split(':')[0];
+    const p = parts.find(pp => identityNums(pp).has(num));
     return p?.id || jid;
 }
 
@@ -84,13 +115,12 @@ async function buildCommunity(conn, chatJid) {
     return { communityJid, announceJid, announceMeta, subgroups };
 }
 
-/** Conjunto de números (sin @server) presentes en los subgrupos. */
+/** Conjunto de TODOS los números (todas las identidades) presentes en los subgrupos. */
 function numbersInSubgroups(subgroups) {
     const set = new Set();
     for (const g of subgroups) {
         for (const p of (g.participants || [])) {
-            const num = String(p.id || p.jid || '').split('@')[0].split(':')[0];
-            if (num) set.add(num);
+            for (const n of identityNums(p)) set.add(n);
         }
     }
     return set;
@@ -110,27 +140,38 @@ async function execute(conn, m, command, args, text) {
         if (!announceMembers.length) { return m.reply('No pude leer los miembros del grupo de anuncios de la comunidad.'); }
         const inSubs = numbersInSubgroups(comm.subgroups);
 
-        // Usuarios en anuncios pero en ningún subgrupo. Se excluyen admins y el
-        // propio bot (no son candidatos a limpieza); así la auditoría coincide
-        // con lo que realmente limpiaría .limpiarcomunidad.
-        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
-        const onlyAnnounce = announceMembers
-            .map(p => ({ jid: p.id || p.jid, num: String(p.id || p.jid || '').split('@')[0].split(':')[0], admin: !!p.admin }))
-            .filter(x => x.num && !inSubs.has(x.num) && !x.admin && x.num !== botNum);
+        // Usuarios en anuncios pero en ningún subgrupo. "En subgrupos" = si
+        // CUALQUIERA de sus identidades (id/lid/phoneNumber) aparece en algún
+        // subgrupo. Se excluyen admins y el bot.
+        const botNums = identityNums({ id: conn.user?.id, lid: conn.user?.lid });
+        const candidates = announceMembers.filter(p => {
+            if (p.admin) return false;
+            const ids = identityNums(p);
+            for (const n of ids) if (inSubs.has(n) || botNums.has(n)) return false;
+            return ids.size > 0;
+        });
 
-        if (!onlyAnnounce.length) return m.reply(`✅ Auditoría: todos los miembros del anuncio participan en al menos un subgrupo.\n\n📊 Subgrupos analizados: ${comm.subgroups.length}`);
+        if (!candidates.length) return m.reply(`✅ Auditoría: todos los miembros del anuncio participan en al menos un subgrupo.\n\n📊 Subgrupos analizados: ${comm.subgroups.length}`);
 
-        const pages = Math.ceil(onlyAnnounce.length / PAGE);
+        const pages = Math.ceil(candidates.length / PAGE);
         if (page > pages) return m.reply(`Solo hay ${pages} página(s). Usa .auditcomunidad ${pages}.`);
         const start = (page - 1) * PAGE;
-        const slice = onlyAnnounce.slice(start, start + PAGE);
+        const slice = candidates.slice(start, start + PAGE);
 
-        const lines = slice.map((x, i) => `${start + i + 1}. https://wa.me/${x.num}  ·  📊 0 subgrupos`);
+        // Resolver el número de teléfono REAL de cada uno para mostrar wa.me.
+        const lines = [];
+        for (let i = 0; i < slice.length; i++) {
+            const p = slice[i];
+            const phone = await phoneOf(conn, p);
+            const n = start + i + 1;
+            if (phone) lines.push(`${n}. https://wa.me/${phone}`);
+            else lines.push(`${n}. ${p.id} _(número oculto por privacidad LID)_`);
+        }
         await m.reply(
             `📊 *Auditoría de Comunidad* (${page}/${pages})\n\n` +
             `👥 Miembros en anuncios: ${announceMembers.length}\n` +
             `🔗 Subgrupos analizados: ${comm.subgroups.length}\n` +
-            `🚷 Solo en anuncios: ${onlyAnnounce.length}\n` +
+            `🚷 Solo en anuncios: ${candidates.length}\n` +
             `━━━━━━━━━━━━━━\n` +
             lines.join('\n') +
             (pages > 1 ? `\n\n_Más: .auditcomunidad ${page < pages ? page + 1 : 1}_` : '') +
@@ -150,21 +191,22 @@ async function execute(conn, m, command, args, text) {
 
         // Verificar que el BOT sea admin del grupo de anuncios (es de donde se
         // expulsa). Sin esto, todos los removes fallarían con "sin permisos".
-        const botNum = String(conn.user?.id || '').split('@')[0].split(':')[0];
+        const botNums = identityNums({ id: conn.user?.id, lid: conn.user?.lid });
         const botIsAdmin = announceMembers.some(p => {
-            const n = String(p.id || p.jid || '').split('@')[0].split(':')[0];
-            return n === botNum && (p.admin === 'admin' || p.admin === 'superadmin');
+            const ids = identityNums(p);
+            const isBot = [...ids].some(n => botNums.has(n));
+            return isBot && (p.admin === 'admin' || p.admin === 'superadmin');
         });
         if (!botIsAdmin) return m.reply('⚠️ No soy administrador del grupo de anuncios de la comunidad, así que no puedo expulsar a nadie.\n\nℹ️ Hazme admin de la comunidad e inténtalo de nuevo.');
 
-        // Candidatos: solo-anuncios, excluyendo admins, bot y owner.
-        const adminNums = new Set(announceMembers.filter(p => p.admin).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
+        // Candidatos: solo-anuncios (ninguna identidad en subgrupos), excluyendo
+        // admins y el bot. Se expulsa por el JID `id` del participante del anuncio.
         const targets = announceMembers
             .filter(p => {
-                const num = String(p.id || p.jid || '').split('@')[0].split(':')[0];
-                if (!num || inSubs.has(num)) return false;          // participa en subgrupos
-                if (num === botNum) return false;                    // el bot
-                if (adminNums.has(num)) return false;                // admins de la comunidad
+                if (p.admin) return false;                           // admins
+                const ids = identityNums(p);
+                if (!ids.size) return false;
+                for (const n of ids) if (inSubs.has(n) || botNums.has(n)) return false; // en subgrupos o es el bot
                 return true;
             })
             .map(p => p.id || p.jid);
@@ -180,9 +222,15 @@ async function execute(conn, m, command, args, text) {
 
         // Vista previa + confirmación. Guardamos el announceJid para el remove.
         _pendingClean.set(comm.communityJid, { targets, announceJid: comm.announceJid, announceMeta: comm.announceMeta, ts: Date.now(), chat: m.chat });
+        const partByJid = new Map(announceMembers.map(p => [p.id || p.jid, p]));
+        const previewLines = [];
+        for (let i = 0; i < Math.min(targets.length, 10); i++) {
+            const phone = await phoneOf(conn, partByJid.get(targets[i]) || { id: targets[i] });
+            previewLines.push(`${i + 1}. ${phone ? 'https://wa.me/' + phone : targets[i] + ' _(LID)_'}`);
+        }
         await m.reply(
             `⚠️ Se encontraron *${targets.length}* usuarios para eliminar (solo en anuncios).\n\n` +
-            targets.slice(0, 10).map((j, i) => `${i + 1}. https://wa.me/${String(j).split('@')[0].split(':')[0]}`).join('\n') +
+            previewLines.join('\n') +
             (targets.length > 10 ? `\n…y ${targets.length - 10} más` : '') +
             `\n\nPara proceder responde:\n*.confirmarlimpieza*\n\n_(La confirmación caduca en 5 min)_`
         );
@@ -262,16 +310,18 @@ async function massRemove(conn, groupJid, jids, meta) {
     let ok = 0, fail = 0; const reasons = [];
     // Asegurar metadata del grupo de anuncios para resolución canónica.
     if (!meta?.participants) { try { meta = await conn.groupMetadata(groupJid); } catch { /* */ } }
-    const memberNums = new Set((meta?.participants || []).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
-    const adminNums = new Set((meta?.participants || []).filter(p => p.admin).map(p => String(p.id || p.jid).split('@')[0].split(':')[0]));
+    // Mapa número→participante considerando TODAS las identidades (LID/PN).
+    const numToPart = new Map();
+    for (const p of (meta?.participants || [])) for (const n of identityNums(p)) numToPart.set(n, p);
 
     // Pre-filtra y resuelve canónicos; recoge motivos antes de llamar a la API.
     const canonList = [];
     for (const jid of jids) {
         const num = String(jid).split('@')[0].split(':')[0];
-        if (adminNums.has(num)) { fail++; reasons.push(`wa.me/${num}: es admin`); continue; }
-        if (!memberNums.has(num)) { fail++; reasons.push(`wa.me/${num}: no pertenece al grupo`); continue; }
-        canonList.push(canonInGroup(jid, meta));
+        const p = numToPart.get(num);
+        if (!p) { fail++; reasons.push(`(${num}): no pertenece al grupo de anuncios`); continue; }
+        if (p.admin) { fail++; reasons.push(`(${num}): es admin`); continue; }
+        canonList.push(p.id || jid);   // expulsar por el JID exacto del participante
     }
     const CHUNK = 5;
     for (let i = 0; i < canonList.length; i += CHUNK) {
@@ -282,7 +332,7 @@ async function massRemove(conn, groupJid, jids, meta) {
                 for (const r of res) {
                     const num = String(r?.jid || '').split('@')[0].split(':')[0];
                     if (r?.status === '200' || r?.status === 200) ok++;
-                    else { fail++; reasons.push(`wa.me/${num}: ${r?.status === '403' ? 'sin permisos (bot no admin)' : 'error ' + (r?.status || '?')}`); }
+                    else { fail++; reasons.push(`(${num}): ${r?.status === '403' ? 'sin permisos (bot no admin)' : 'error ' + (r?.status || '?')}`); }
                 }
             } else ok += slice.length;
         } catch (e) {
