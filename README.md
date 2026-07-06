@@ -4,7 +4,7 @@
 
 ### Bot de WhatsApp Multi-Device · Temática BL / Yaoi / Jinx
 
-*Economía Jinx · Gacha BL · SubBots · Moderación LID-aware · 338 comandos*
+*Economía Jinx · Gacha BL · SubBots · Moderación LID-aware · 374 comandos*
 
 `Baileys v7` · `Node ≥ 20` · `ESM` · `MongoDB opcional`
 
@@ -17,7 +17,7 @@
 KimdanBot-MD es un bot de WhatsApp construido sobre **Baileys v7** con una
 arquitectura modular propia. Está tematizado en torno al universo **BL / Yaoi**
 (con *Jinx* como insignia) e incluye un sistema económico completo, gacha de
-personajes, sub-bots, herramientas de moderación y un catálogo de **338 comandos**
+personajes, sub-bots, herramientas de moderación y un catálogo de **374 comandos**
 repartidos en 16 categorías.
 
 Toda la lógica vive en `kim/`, separada por responsabilidades: tocar un módulo
@@ -41,6 +41,53 @@ no afecta a los demás.
 | 🎨 **Stickers** | conversión + sistema de packs (metadata, favoritos, público/privado) |
 | 🌐 **Multilenguaje** | capa de traducción opt-in (LibreTranslate) por usuario/grupo/global |
 | 📚 **Biblioteca** | catálogo de libros con MongoDB (degradación elegante sin Mongo) |
+| 🧹 **Auto-limpieza de sesión** | poda segura del `authFolder` (nunca toca `creds.json` ni AppState Keys) |
+| 🪵 **Logs con niveles** | `silent/error/warn/info/debug` vía `LOG_LEVEL`, `settings.js` o `.loglevel` |
+| 🎮 **Minijuegos** | adivina el número, mates, ahorcado y gato (tres en raya) con premios en 💜 JX |
+| 🎭 **Chat anónimo** | empareja a dos personas en privado y reenvía sus mensajes sin revelar identidad |
+| 🔇 **Mute por grupo** | silencia a un usuario (borra sus mensajes) protegiendo owner y admins |
+| 👁️ **Anti view-once** | revela los mensajes de "ver una vez" en el grupo |
+| 📥 **Descargas robustas** | cadenas multi-proveedor (YouTube, TikTok, IG, FB, X, Pinterest, Spotify, SoundCloud, Threads, MediaFire) |
+| 🖼️ **Imagen aleatoria** | `.pruebaimagen` envía una imagen al azar desde la carpeta `media/pruebaimagen/` |
+
+---
+
+## 🧹 Mantenimiento automático del `authFolder`
+
+Con el tiempo, Baileys acumula miles de archivos de sesión (`pre-key-*`,
+`session-*`, `sender-key-*`) que ralentizan el arranque y llenan el disco.
+`kim/authcare.js` los poda de forma **segura y automática**:
+
+- **Nunca** toca `creds.json` ni `app-state-sync-key/version-*` → la sesión
+  y las AppState Keys quedan intactas (no hay que volver a escanear el QR).
+- Solo borra archivos que Baileys **regenera solo**, y solo si son viejos
+  (por `mtime`): pre-keys > 30 días, sesiones > 21 días, sender-keys > 14 días.
+- Se ejecuta al arrancar (solo si hay acumulación real, > 300 archivos podables)
+  y cada 12 h. Cubre también las sesiones de sub-bots.
+- Configurable en `settings.js → global.authCare` o con variables `AUTHCARE_*`
+  (ver `env.example`).
+
+Comandos owner: `.authstatus` (radiografía), `.authclean [--dry]` (poda manual
+o simulación), `.loglevel <nivel>` (detalle de consola en caliente).
+
+Más detalles técnicos y el informe completo de cambios: **`AUDITORIA.md`**.
+
+---
+
+## 🆕 Novedades v3.2.0
+
+- **Nuevo comando `.pruebaimagen`** (alias `.testimagen`, `.testimg`): envía una
+  imagen al azar de `media/pruebaimagen/` (o `./pruebaimagen/`). Trae 3 imágenes
+  de ejemplo; reemplázalas por las tuyas.
+- **Descargas más estables**: el timeout de los proveedores ahora cubre también
+  la lectura del cuerpo de la respuesta, no solo la conexión.
+- **DB con migración de forma**: al iniciar, los registros antiguos reciben
+  automáticamente los campos nuevos (evita errores tras actualizar).
+- **`getBuffer`/`fetchJson` corregidos**: pasar headers propios ya no elimina el
+  `User-Agent` por defecto.
+- **Filtro antitóxico afinado**: se quitaron palabras cotidianas inofensivas
+  (perro, loca, caca, bobo…) que causaban advertencias por error; se mantienen
+  los insultos reales.
 
 ---
 
@@ -215,8 +262,7 @@ Para arquitectura, sistema de comandos, economía, GIFs y SubBots, ver
 
 ## 💖 Créditos
 
-- **Base**: Baileys (WhiskeySockets) y la comunidad de bots MD.
-- **Tema y comandos BL/Jinx**: personalización propia.
+- **Desarrollo, tema y comandos BL/Jinx**: KimdanBot-MD (Danonino · Universo BL).
 - **Fuentes BL**: AniList y MangaDex (APIs públicas) para búsquedas.
 - Hecho con cariño para la comunidad BL/Yaoi 💜
 

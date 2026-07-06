@@ -16,9 +16,14 @@ kim/
 ├── helpers.js           smsg(), serializeConn(), utilidades LID-aware
 ├── theme.js             Monedas, rarezas, personajes BL, helpers VIP
 ├── ui.js                Cajas/separadores/caritas para textos premium
-├── media.js             GIFs locales + caché en disco/RAM
+├── media.js             GIFs locales + caché en disco/RAM · imágenes aleatorias (getRandomImage)
 ├── announcements.js     welcome/bye/promote + anti-* + bienvenidas masivas
 ├── middleware.js        anti-link / anti-spam / anti-fake / AFK
+├── logger.js            Logs con niveles (LOG_LEVEL / .loglevel)
+├── authcare.js          Mantenimiento seguro del authFolder (poda por edad)
+├── providers.js         Cadenas multi-proveedor para descargas (fallback)
+├── games.js             Motor de minijuegos por chat (número/mates/ahorcado/gato)
+├── anonchat.js          Chat anónimo 1:1 por privado (emparejamiento + relay)
 ├── commands*.js         Comandos (case/switch + COMMAND_META)
 ├── subbots/             Sistema de sub-bots (sesión, gestor, persistencia)
 └── idiomas/             Traducción y cadenas localizadas

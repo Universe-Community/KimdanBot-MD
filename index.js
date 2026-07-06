@@ -71,6 +71,7 @@ import { Handler } from './kim/handler.js';
 import { serializeConn } from './kim/helpers.js';
 import { initDB } from './kim/db.js';
 import { attachAnnouncements } from './kim/announcements.js';
+import { startAuthCare, stopAuthCare } from './kim/authcare.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // FILTRO DE RUIDO DE LIBSIGNAL
@@ -395,6 +396,11 @@ async function start() {
         // kim/announcements.js NO afecta al despachador.
         attachAnnouncements(conn);
 
+        // ─ Mantenimiento automático del authFolder ─
+        // Poda archivos de sesión obsoletos (pre-keys/sesiones/sender-keys
+        // viejos) SIN tocar creds.json ni las AppState Keys. Ver kim/authcare.js.
+        startAuthCare(AUTH_PATH);
+
         // ─ Restaurar sub-bots persistidos al conectar el bot principal ─
         // (nueva arquitectura kim/subbots/: reconexión automática tolerante a fallos)
         conn.ev.on('connection.update', async (update) => {
@@ -449,7 +455,11 @@ async function start() {
 // ─── Cierre limpio ────────────────────────────────────────────────
 function shutdown(signal) {
     console.log(chalk.yellow(`\n[INDEX] Cerrando bot (${signal})...`));
-    if (global.db) try { global.db.flush?.(); } catch { /* */ }
+    try { stopAuthCare(); } catch { /* */ }
+    // flushSync: escritura síncrona garantizada ANTES de salir. La versión
+    // anterior llamaba flush() (async) y process.exit(0) no la esperaba,
+    // así que los cambios de los últimos segundos podían perderse.
+    if (global.db) try { global.db.flushSync?.(); } catch { /* */ }
     if (global.kim?.end) try { global.kim.end(undefined); } catch { /* */ }
     if (!rl.closed) rl.close();
     process.exit(0);

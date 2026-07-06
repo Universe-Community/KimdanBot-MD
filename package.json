@@ -1,6 +1,6 @@
 {
   "name": "kimdanbot-md",
-  "version": "3.0.0",
+  "version": "3.2.0",
   "description": "WhatsApp bot — Baileys v7, ESM, LID-aware",
   "main": "index.js",
   "type": "module",
