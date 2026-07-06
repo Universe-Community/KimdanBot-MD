@@ -52,7 +52,7 @@ const COMMAND_META = [
     { names: ['ttimg', 'tiktokimg', 'tiktokfotos'], category: 'download', description: 'Fotos de un TikTok (carrusel)' },
     // Utilidades
     { names: ['qrcode', 'crearqr'], category: 'tools', description: 'Genera un código QR de un texto' },
-    { names: ['pruebaimagen', 'testimagen', 'testimg'], category: 'media', description: 'Envía una imagen aleatoria de la carpeta pruebaimagen' },
+    { names: ['pene', 'deck', 'nepe'], category: 'media', description: 'Envía una imagen aleatoria de la carpeta pene' },
     { names: ['calc', 'calculadora'], category: 'tools', description: 'Calculadora (+ - × ÷ π e)' },
     { names: ['morse', 'morsedecode'], category: 'tools', description: 'Codifica/decodifica código Morse' },
     { names: ['readmore', 'leermas'], category: 'tools', description: 'Texto con "leer más" oculto' },
@@ -145,7 +145,7 @@ export async function execute(conn, m, cmd, args, text) {
         break;
     }
 
-    case 'pene': {
+    case 'pene' : {
         // Envía una imagen aleatoria de la carpeta "pruebaimagen"
         // (se busca en ./pruebaimagen y en ./media/pruebaimagen).
         try {
