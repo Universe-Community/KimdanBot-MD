@@ -216,11 +216,11 @@ text20: `╭─────────────┈⊷
 │ \`\`\`COMO INSTALAR ESTE BOT?\`\`\`
 ╰┬────────────┈⊷
 ┌┤\`\`\`📌 REQUISITOS PARA LAS INSTALACION \`\`\`
-┌┤❇️ _Dudas: wa.me/5492266466080_
-┌┤❇️ _Tutoríal: https://youtu.be/OhbJjp0L2QA?si=ZqRgG3SGTRFSW6CH_
+┌┤❇️ _Dudas: instagram.com/_universo.bl_
+┌┤❇️ _Tutoríal: https://github.com/Kimdanbot-MD/KimdanBot-MD_
 ┌┤❇️ _1 GB de almacenamiento_
 ┌┤❇️ _Termux: https://www.mediafire.com/file/3hsvi3xkpq3a64o/termux_118.apk/file_
-┌┤❇️ _GitHub: https://github.com/elrebelde21/NovaBot-MD_
+┌┤❇️ _GitHub: https://github.com/Kimdanbot-MD/KimdanBot-MD_
 ┌┤❇️ _un whatsapp inmune (secundario)_
 ┌┤❇️ _un número victual (otro numero)_
 ┌┤❇️ _2 dispositivo o una PC para escanear_
@@ -232,7 +232,7 @@ text20: `╭─────────────┈⊷
 
 > apt update && apt upgrade && pkg update && pkg upgrade && pkg install bash && pkg install libwebp && pkg install git -y && pkg install nodejs -y && pkg install ffmpeg -y && pkg install wget && pkg install imagemagick -y && pkg install yarn
 
-> git clone https://github.com/elrebelde21/NovaBot-MD && cd NovaBot-MD && yarn && npm install
+> git clone https://github.com/Kimdanbot-MD/KimdanBot-MD && cd KimdanBot-MD && yarn && npm install
 
 > npm start
 
@@ -413,7 +413,7 @@ text4: `*YA ME UNÍ 😼*`,
 text5: `📧 *ＳＯＬＩＣＩＴＵＤ ＰＡＲＡ ＵＮ ＧＲＵＰＯ*\n\n*👤 ＳＯＬＩＣＩＴＡＮＴＥ*`, 
 text6: `*🔮 ＥＮＬＡＣＥ*`, 
 text7: `*✅ 𝘚𝘶 𝘦𝘯𝘭𝘢𝘤𝘦 𝘴𝘦 𝘦𝘯𝘷𝘪𝘰𝘯 𝘢 𝘮𝘪 𝘗𝘳𝘰𝘱𝘪𝘦𝘵𝘢𝘳𝘪𝘰(𝘢)*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n⚠️ *𝘚𝘶 𝘨𝘳𝘶𝘱𝘰 𝘴𝘦𝘳𝘢 𝘦𝘷𝘢𝘭𝘶𝘢𝘥𝘰 𝘺 𝘲𝘶𝘦𝘥𝘢𝘳𝘢 𝘢 𝘥𝘦𝘤𝘪𝘴𝘪𝘰𝘯 𝘥𝘦 𝘮𝘪 𝘗𝘳𝘰𝘱𝘪𝘦𝘵𝘢𝘳𝘪𝘰(𝘢) 𝘴𝘪 𝘦𝘭 𝘣𝘰𝘵 𝘴𝘦 𝘶𝘯𝘦 𝘰 𝘯𝘰 𝘢𝘭 𝘨𝘳𝘶𝘱𝘰.*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n❕ *𝘌𝘴 𝘱𝘰𝘴𝘪𝘣𝘭𝘦 𝘲𝘶𝘦 𝘴𝘶 𝘚𝘰𝘭𝘪𝘤𝘪𝘵𝘶𝘥 𝘴𝘦𝘢 𝘙𝘦𝘤𝘩𝘢𝘻𝘢𝘥𝘢 𝘱𝘰𝘳 𝘭𝘢𝘴 𝘴𝘪𝘨𝘶𝘪𝘦𝘯𝘵𝘦𝘴 𝘊𝘢𝘶𝘴𝘢𝘴:*\n*1️⃣ 𝘌𝘭 𝘉𝘰𝘵 𝘦𝘴𝘵𝘢́ 𝘚𝘢𝘵𝘶𝘳𝘢𝘥𝘰.*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n2️⃣ *𝘌𝘭 𝘉𝘰𝘵 𝘧𝘶𝘦 𝘦𝘭𝘪𝘮𝘪𝘯𝘢𝘥𝘰 𝘥𝘦𝘭 𝘎𝘳𝘶𝘱𝘰.*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n3️⃣ *𝘌𝘭 𝘎𝘳𝘶𝘱𝘰 𝘯𝘰 𝘤𝘶𝘮𝘱𝘭𝘦 𝘤𝘰𝘯 𝘭𝘢𝘴 𝘕𝘰𝘳𝘮𝘢𝘵𝘪𝘷𝘢𝘴 𝘥𝘦 𝘣𝘰𝘵*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n4️⃣ *𝘌𝘭 𝘦𝘯𝘭𝘢𝘤𝘦 𝘥𝘦𝘭 𝘨𝘳𝘶𝘱𝘰 𝘴𝘦 𝘳𝘦𝘴𝘵𝘢𝘣𝘭𝘦𝘤𝘪𝘰.*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n5️⃣ *𝘕𝘰 𝘴𝘦 𝘢𝘨𝘳𝘦𝘨𝘢 𝘢 𝘎𝘳𝘶𝘱𝘰𝘴 𝘴𝘦𝘨𝘶́𝘯 𝘔𝘪 𝘗𝘳𝘰𝘱𝘪𝘦𝘵𝘢𝘳𝘪𝘰(𝘢)*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n📧 *𝘓𝘢 𝘴𝘰𝘭𝘪𝘤𝘪𝘵𝘶𝘥 𝘱𝘶𝘦𝘥𝘦 𝘵𝘢𝘳𝘥𝘢𝘳 𝘏𝘰𝘳𝘢𝘴 𝘦𝘯 𝘴𝘦𝘳 𝘙𝘦𝘴𝘱𝘰𝘯𝘥𝘪𝘥𝘢. 𝘗𝘰𝘳 𝘧𝘢𝘷𝘰𝘳 𝘛𝘦𝘯𝘦𝘳 𝘗𝘢𝘤𝘪𝘦𝘯𝘤𝘪𝘢, 𝘎𝘳𝘢𝘤𝘪𝘢𝘴*\n┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n*ᴾᵘᵉᵈᵉ ᵃᵖᵒʸᵃʳ ᵉˡ ᵇᵒᵗ ᶜᵒⁿ ᵘⁿᵃ ᴱˢᵗʳᵉˡˡᶦᵗᵃ ᵉˡ ⁿᵘᵉˢᵗʳᵒ ʳᵉᵖᵒˢᶦᵗᵒʳᶦᵒ ᵒᶠᶦᶜᶦᵃˡ ʸ ˢᵘˢᶜʳᶦʳᵗᵉ ᵃ ⁿᵘᵉˢᵗʳᵒ ᶜᵃⁿᵃˡ ᵈᵉˡ ʸᵒᵘᵀᵘᵇᵉ ᵐᵃⁿᵈᵃ ᶜᵃʳᵗᵘʳᵃ ᵃ ᵐᶦ ᶜʳᵉᵃᵈᵒʳ ᵖᵃʳᵃ ᵠᵘᵉ ᵖᵘᵉᵈᵃ ᵃᵍʳᵉᵍᵃ ᵉˡ ᵇᵒᵗ ᵃ ᵗᵘ ᵍʳᵘᵖᵒ 💫*`, 
-text8: `*[ ＵＮＥ ＵＮ ＢＯＴ Ａ ＴＵ ＧＲＵＰＯ ]*\n\n𝙀𝙡 𝙗𝙤𝙩 𝙨𝙚 𝙥𝙪𝙚𝙙𝙚𝙣 𝙪𝙣𝙞𝙧 𝙖 𝙩𝙪 𝙜𝙧𝙪𝙥𝙤, 𝙨𝙞 𝙩𝙪 𝙖𝙥𝙤𝙮𝙖𝙧 𝙖𝙡 𝙗𝙤𝙩 𝙘𝙤𝙣 𝙪𝙣𝙖 𝙚𝙨𝙩𝙧𝙚𝙡𝙡𝙞𝙩𝙖 🌟 𝙚𝙡 𝙧𝙚𝙥𝙤𝙨𝙞𝙩𝙤𝙧𝙞𝙤 𝙤𝙛𝙘\nhttps://github.com/elrebelde21/NovaBot-MD\n\n🔔 𝙎𝙪𝙗𝙨𝙘𝙧𝙞𝙧𝙩𝙚 𝙖 𝙣𝙪𝙚𝙨𝙩𝙧𝙤 𝙘𝙖𝙣𝙖𝙡 𝙙𝙚 𝙮𝙤𝙪𝙩𝙪𝙗𝙚\nhttps://www.youtube.com/@elrebelde.21\n\n🧐 𝙈𝙖𝙣𝙙𝙖 𝘾𝙖𝙥𝙩𝙪𝙧𝙖 (𝙥𝙧𝙪𝙚𝙗𝙖) 𝙖 𝙢𝙞 𝙘𝙧𝙚𝙖𝙙𝙤𝙧 𝙖𝙡:\nwa.me/5492266466080 𝙋𝙖𝙧𝙖 𝙥𝙤𝙙𝙚𝙧 𝙪𝙣𝙞𝙧 𝙪𝙣 𝙗𝙤𝙩 𝙖 𝙩𝙪 𝙜𝙧𝙪𝙥𝙤 💞`, 
+text8: `*[ ＵＮＥ ＵＮ ＢＯＴ Ａ ＴＵ ＧＲＵＰＯ ]*\n\n𝙀𝙡 𝙗𝙤𝙩 𝙨𝙚 𝙥𝙪𝙚𝙙𝙚𝙣 𝙪𝙣𝙞𝙧 𝙖 𝙩𝙪 𝙜𝙧𝙪𝙥𝙤, 𝙨𝙞 𝙩𝙪 𝙖𝙥𝙤𝙮𝙖𝙧 𝙖𝙡 𝙗𝙤𝙩 𝙘𝙤𝙣 𝙪𝙣𝙖 𝙚𝙨𝙩𝙧𝙚𝙡𝙡𝙞𝙩𝙖 🌟 𝙚𝙡 𝙧𝙚𝙥𝙤𝙨𝙞𝙩𝙤𝙧𝙞𝙤 𝙤𝙛𝙘\nhttps://github.com/Kimdanbot-MD/KimdanBot-MD\n\n🔔 𝙎𝙪𝙗𝙨𝙘𝙧𝙞𝙧𝙩𝙚 𝙖 𝙣𝙪𝙚𝙨𝙩𝙧𝙤 𝙘𝙖𝙣𝙖𝙡 𝙙𝙚 𝙮𝙤𝙪𝙩𝙪𝙗𝙚\nhttps://youtube.com/@universobl\n\n🧐 𝙈𝙖𝙣𝙙𝙖 𝘾𝙖𝙥𝙩𝙪𝙧𝙖 (𝙥𝙧𝙪𝙚𝙗𝙖) 𝙖 𝙢𝙞 𝙘𝙧𝙚𝙖𝙙𝙤𝙧 𝙖𝙡:\ninstagram.com/_universo.bl 𝙋𝙖𝙧𝙖 𝙥𝙤𝙙𝙚𝙧 𝙪𝙣𝙞𝙧 𝙪𝙣 𝙗𝙤𝙩 𝙖 𝙩𝙪 𝙜𝙧𝙪𝙥𝙤 💞`, 
 text9: `*⚠️Y la imagen?*`, 
 text10: `*⚠️Responde a una  Image con :*`, 
 text11: `*✅El nombre del grupo se cambio correctamente*`, 
