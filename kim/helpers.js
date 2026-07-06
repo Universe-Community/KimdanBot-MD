@@ -95,10 +95,11 @@ export const logic = (a, b, c) => Boolean(a && b && c);
 export const fetchJson = async (url, options = {}) => {
     try {
         const res = await axios({
-            method: 'GET', url,
+            method: 'GET',
+            ...options,
+            url,
             timeout: options.timeout || 15000,
             headers: { 'User-Agent': 'Mozilla/5.0 (compatible; KimdanBot)', ...(options.headers || {}) },
-            ...options,
         });
         return res.data;
     } catch (e) { console.error(`[fetchJson] ${url}: ${e.message}`); return null; }
@@ -107,10 +108,12 @@ export const fetchJson = async (url, options = {}) => {
 export const getBuffer = async (url, options = {}) => {
     try {
         const res = await axios({
-            method: 'GET', url, responseType: 'arraybuffer',
+            method: 'GET',
+            ...options,
+            url,
+            responseType: 'arraybuffer',
             timeout: options.timeout || 30000,
             headers: { 'User-Agent': 'Mozilla/5.0', ...(options.headers || {}) },
-            ...options,
         });
         return Buffer.from(res.data);
     } catch (e) { console.error(`[getBuffer] ${url}: ${e.message}`); return null; }
@@ -198,8 +201,9 @@ export function smsg(conn, raw, store) {
     // ── Desenvuelve ephemeral / view-once ──
     let message = m.message;
     if (message.ephemeralMessage?.message) message = message.ephemeralMessage.message;
-    if (message.viewOnceMessageV2?.message) message = message.viewOnceMessageV2.message;
-    if (message.viewOnceMessage?.message) message = message.viewOnceMessage.message;
+    if (message.viewOnceMessageV2?.message) { message = message.viewOnceMessageV2.message; m.isViewOnce = true; }
+    if (message.viewOnceMessage?.message) { message = message.viewOnceMessage.message; m.isViewOnce = true; }
+    if (message.viewOnceMessageV2Extension?.message) { message = message.viewOnceMessageV2Extension.message; m.isViewOnce = true; }
     if (message.documentWithCaptionMessage?.message) message = message.documentWithCaptionMessage.message;
     m.message = message;
 
@@ -331,8 +335,8 @@ export function serializeConn(conn) {
     };
 
     // ── Stickers (adaptado a v7) ──────────────────────────────────
-    // Reemplaza los métodos legacy `sendImageAsSticker`/`sendVideoAsSticker`
-    // del bot de referencia, que dependían de `node-webpmux` + jimp. Aquí:
+    // Métodos `sendImageAsSticker`/`sendVideoAsSticker` para stickers.
+    // Implementación propia basada en sharp/ffmpeg:
     //   • Imagen → webp 512×512 con `sharp` (import dinámico, opcional).
     //   • Video/gif → webp animado con `ffmpeg` (binario del sistema).
     // Si la herramienta no está instalada, lanzan un Error claro que el
@@ -409,17 +413,23 @@ export function serializeConn(conn) {
  */
 export async function tryProviders(providers, { timeout = 30000 } = {}) {
     for (const p of providers) {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), timeout);
         try {
-            const ctrl = new AbortController();
-            const to = setTimeout(() => ctrl.abort(), timeout);
             const res = await fetch(p.url, { signal: ctrl.signal, headers: { 'User-Agent': 'Mozilla/5.0' } });
-            clearTimeout(to);
             if (!res.ok) continue;
+            // El timeout cubre también la lectura del cuerpo (algunos
+            // proveedores devuelven headers rápido pero cuelgan el body).
             const ct = res.headers.get('content-type') || '';
-            const data = ct.includes('json') ? await res.json() : await res.text();
+            const text = await res.text();
+            let data = text;
+            if (ct.includes('json') || /^\s*[[{]/.test(text)) {
+                try { data = JSON.parse(text); } catch { data = text; }
+            }
             const out = p.extract ? p.extract(data) : data;
             if (out) return out;
         } catch { /* probar siguiente proveedor */ }
+        finally { clearTimeout(to); }
     }
     return null;
 }
@@ -429,8 +439,10 @@ export async function ytAudioUrl(videoUrl) {
     const u = encodeURIComponent(videoUrl);
     return tryProviders([
         { url: `https://api.vreden.my.id/api/ytmp3?url=${u}`, extract: d => d?.result?.download?.url || d?.result?.url },
-        { url: `https://api.zm.io.vn/api/ytmp3?url=${u}`,     extract: d => d?.result?.url || d?.url },
-        { url: `https://youtube-dl.kr/api/ytmp3?url=${u}`,    extract: d => d?.url || d?.result },
+        { url: `https://api.dorratz.com/v2/yt-mp3?url=${u}`,  extract: d => d?.data?.download || d?.data?.url || d?.audio || d?.url },
+        { url: `https://api.ryzendesu.vip/api/downloader/ytmp3?url=${u}`, extract: d => (d?.status === 'tunnel' && d?.url) ? d.url : (d?.result?.url || null) },
+        { url: `https://api.delirius.store/download/ytmp3?url=${u}`, extract: d => d?.data?.download?.url || d?.data?.url || d?.download?.url },
+        { url: `https://api.zenkey.my.id/api/download/ytmp3?apikey=zenkey&url=${u}`, extract: d => d?.result?.download?.url || d?.result?.url },
     ], { timeout: 45000 });
 }
 /** Descarga de video de YouTube probando varios proveedores. */
@@ -438,6 +450,8 @@ export async function ytVideoUrl(videoUrl) {
     const u = encodeURIComponent(videoUrl);
     return tryProviders([
         { url: `https://api.vreden.my.id/api/ytmp4?url=${u}`, extract: d => d?.result?.download?.url || d?.result?.url },
-        { url: `https://api.zm.io.vn/api/ytmp4?url=${u}`,     extract: d => d?.result?.url || d?.url },
+        { url: `https://api.siputzx.my.id/api/d/ytmp4?url=${u}`, extract: d => d?.data?.dl || d?.data?.url || d?.data?.download },
+        { url: `https://api.delirius.store/download/ytmp4?url=${u}`, extract: d => d?.data?.download?.url || d?.data?.url || d?.download?.url },
+        { url: `https://delirius-apiofc.vercel.app/download/ytmp4?url=${u}`, extract: d => d?.data?.download?.url || d?.data?.url },
     ], { timeout: 60000 });
 }

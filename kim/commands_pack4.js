@@ -219,8 +219,17 @@ export async function execute(conn, m, cmd, args, text) {
     // ═══════════ DESCARGAS ═══════════
     case 'twitter': {
         if (!text || !/twitter\.com|x\.com|t\.co/.test(text)) return m.reply('Uso: .twitter <link>');
-        try { const res=await axios.get(`https://api.vreden.my.id/api/twitter?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 }); const dl=res.data?.result?.media?.find(x=>x.type==='video')?.url||res.data?.result?.url; if (!dl) throw new Error('sin video'); const buf=await getBuffer(dl,{timeout:120000}); await conn.sendMessage(from, { video: buf, caption: '📥 Twitter/X' }, { quoted: m }); }
-        catch { await m.reply('❌ No se pudo descargar (servicio externo no disponible).'); }
+        try {
+            const { twitterMedia } = await import('./providers.js');
+            const r = await twitterMedia(text.trim());
+            if (!r?.url) throw new Error('sin media');
+            const buf = await getBuffer(r.url, { timeout: 120000 });
+            if (!buf) throw new Error('descarga vacía');
+            await conn.sendMessage(from, r.type === 'image'
+                ? { image: buf, caption: '📥 Twitter/X 💜' }
+                : { video: buf, caption: '📥 Twitter/X 💜' }, { quoted: m });
+        }
+        catch { await m.reply('🥺 No pude descargar ese tweet ahora mismo. Intenta más tarde 💜'); }
         break;
     }
     case 'reel': {

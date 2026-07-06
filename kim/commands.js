@@ -1402,17 +1402,20 @@ export async function execute(conn, m, rawCommand, args, text) {
                     const video = r.videos?.[0];
                     if (!video) return m.reply('Sin resultados.');
                     try {
-                        const apiUrl = `https://api.zahwazein.xyz/downloader/youtubeaudio?url=${encodeURIComponent(video.url)}&apikey=${global.keysxxx}`;
-                        const res = await axios.get(apiUrl, { timeout: 30000 });
-                        const audioUrl = res.data?.result?.url || res.data?.result?.audio;
-                        if (!audioUrl) throw new Error('API sin URL');
-                        const buf = await getBuffer(audioUrl);
+                        await m.react?.('🎵').catch(() => {});
+                        // Cadena de proveedores (helpers.ytAudioUrl): si uno cae,
+                        // se prueba el siguiente automáticamente.
+                        const { ytAudioUrl } = await import('./helpers.js');
+                        const audioUrl = await ytAudioUrl(video.url);
+                        if (!audioUrl) throw new Error('Ningún proveedor respondió');
+                        const buf = await getBuffer(audioUrl, { timeout: 120000 });
+                        if (!buf) throw new Error('Descarga vacía');
                         await conn.sendMessage(m.chat, {
-                            audio: buf, mimetype: 'audio/mp4',
+                            audio: buf, mimetype: 'audio/mpeg',
                             fileName: `${video.title}.mp3`,
                         }, { quoted: m });
                     } catch {
-                        await m.reply(`🎵 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ No pude descargar el audio (API caída). Usa el link.`);
+                        await m.reply(`🎵 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n🥺 No pude descargar el audio ahora mismo. Usa el link mientras tanto 💜`);
                     }
                 } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
                 break;
@@ -1427,7 +1430,21 @@ export async function execute(conn, m, rawCommand, args, text) {
                     const r = await yts(text);
                     const video = r.videos?.[0];
                     if (!video) return m.reply('Sin resultados.');
-                    await m.reply(`🎬 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n⚠️ La descarga directa requiere scrapers externos. Usa el link.`);
+                    if ((video.seconds || 0) > 1200) return m.reply(`🎬 *${video.title}* dura ${video.timestamp} — demasiado largo para enviar por WhatsApp.\n${video.url}`);
+                    await m.react?.('🎬').catch(() => {});
+                    try {
+                        const { ytVideoUrl } = await import('./helpers.js');
+                        const dl = await ytVideoUrl(video.url);
+                        if (!dl) throw new Error('Ningún proveedor respondió');
+                        const buf = await getBuffer(dl, { timeout: 180000 });
+                        if (!buf) throw new Error('Descarga vacía');
+                        await conn.sendMessage(m.chat, {
+                            video: buf, mimetype: 'video/mp4',
+                            caption: `🎬 *${video.title}*\n🫐 ${video.author?.name || ''} — ${video.timestamp}`,
+                        }, { quoted: m });
+                    } catch {
+                        await m.reply(`🎬 *${video.title}*\n_${video.author?.name}_ — ${video.timestamp}\n${video.url}\n\n🥺 No pude descargar el video ahora mismo. Usa el link mientras tanto 💜`);
+                    }
                 } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
                 break;
             }
@@ -1435,16 +1452,16 @@ export async function execute(conn, m, rawCommand, args, text) {
             case 'tiktok': {
                 if (!text || !isUrl(text)) return m.reply('Uso: .tiktok <link>');
                 try {
-                    const apiUrl = `https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(text)}`;
-                    const res = await axios.get(apiUrl, { timeout: 20000 });
-                    const videoUrl = res.data?.video?.noWatermark || res.data?.video?.watermark;
-                    if (!videoUrl) throw new Error('API sin URL');
-                    const buf = await getBuffer(videoUrl);
+                    const { tiktokVideo } = await import('./providers.js');
+                    const r = await tiktokVideo(text.trim());
+                    if (!r?.url) throw new Error('sin url');
+                    const buf = await getBuffer(r.url, { timeout: 120000 });
+                    if (!buf) throw new Error('descarga vacía');
                     await conn.sendMessage(m.chat, {
                         video: buf, mimetype: 'video/mp4',
-                        caption: res.data?.title || 'TikTok',
+                        caption: `🎀 ${r.title || 'TikTok'}`,
                     }, { quoted: m });
-                } catch (e) { await m.reply('❌ No se pudo descargar (API caída). Intenta con otro link.'); }
+                } catch (e) { await m.reply('🥺 No pude descargar ese TikTok ahora. Si es un carrusel de fotos, prueba *.ttimg <link>* 💜'); }
                 break;
             }
 

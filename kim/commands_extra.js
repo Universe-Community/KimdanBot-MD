@@ -1,17 +1,9 @@
-// kim/commands_extra.js — Comandos MIGRADOS desde el bot de referencia.
+// kim/commands_extra.js — Comandos extra de KimdanBot.
 //
-// Todos estos comandos provienen de KimdanBot-MD1 (Baileys legacy, CommonJS)
-// y fueron REESCRITOS para la arquitectura del proyecto principal:
-//   • CommonJS  → ESM
-//   • switch en kim.js  → registry.command()
-//   • Baileys legacy    → Baileys v7 (LID-aware)
-//   • APIs muertas/de pago (lolhuman, akuari, simsimi, brainshop, zahwazein)
-//     → reemplazadas por servicios keyless funcionales (pollinations,
-//       duckduckgo, lyrics.ovh, github, catbox) o por ffmpeg local.
-//   • MongoDB (libros) → base de datos JSON local (db.data.others.books)
-//
-// Se registran en el MISMO registry que commands.js, así que el handler
-// los despacha sin cambios y aparecen en el menú por categoría.
+// Descargas, utilidades, biblioteca (MongoDB con degradación a JSON local)
+// y comandos BL/Yaoi adicionales. Se registran en el MISMO registry que
+// commands.js, así que el handler los despacha sin cambios y aparecen en
+// el menú agrupados por categoría.
 
 import { spawn } from 'child_process';
 import os from 'os';
@@ -77,7 +69,7 @@ async function runFfmpeg(inputBuf, args, outExt = 'mp3') {
 // INFO / OWNER
 // ═══════════════════════════════════════════════════════════════════════
 
-// ─── Metadatos de todos los comandos migrados ──────────────────────────
+// ─── Metadatos de los comandos ──────────────────────────────────────
 const COMMAND_META = [
     { name: 'imagen', category: 'info', description: 'Envía la foto del chat/grupo' },
     { name: 'colaborador1', aliases: ['colab1'], category: 'info', description: 'Datos de un colaborador' },
@@ -639,12 +631,21 @@ export async function execute(conn, m, cmd, args, text) {
     case 'mediafire': {
     if (!text || !/mediafire\.com/.test(text)) return m.reply('Uso: .mediafire <link de MediaFire>');
     try {
-        const page = await axios.get(text.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
-        const html = page.data;
-        const dl = (html.match(/href="((https?:\/\/download[^"]+))"/) || [])[1]
-            || (html.match(/"(https?:\/\/download\d+\.mediafire\.com[^"]+)"/) || [])[1];
+        // 1) API (cadena delirius) — 2) fallback: scrape directo de la página.
+        let dl = null, name = null;
+        try {
+            const { mediafireDl } = await import('./providers.js');
+            const r = await mediafireDl(text.trim());
+            if (r?.url) { dl = r.url; name = r.name; }
+        } catch { /* pasa al scrape */ }
+        if (!dl) {
+            const page = await axios.get(text.trim(), { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 20000 });
+            const html = page.data;
+            dl = (html.match(/href="((https?:\/\/download[^"]+))"/) || [])[1]
+                || (html.match(/"(https?:\/\/download\d+\.mediafire\.com[^"]+)"/) || [])[1];
+        }
         if (!dl) throw new Error('No encontré el enlace directo.');
-        const name = decodeURIComponent((dl.split('/').pop() || 'archivo').split('?')[0]);
+        name = name || decodeURIComponent((dl.split('/').pop() || 'archivo').split('?')[0]);
         await m.reply(`📥 *${name}*\nDescargando...`);
         const buf = await getBuffer(dl, { timeout: 120000 });
         await conn.sendMessage(m.chat, { document: buf, fileName: name, mimetype: 'application/octet-stream' }, { quoted: m });
@@ -675,37 +676,38 @@ export async function execute(conn, m, cmd, args, text) {
 
     if (!text || !/facebook\.com|fb\.watch/.test(text)) return m.reply('Uso: .facebook <link>');
     try {
-        const res = await axios.get(`https://api.vreden.my.id/api/fbdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
-        const dl = res.data?.result?.[0]?.url || res.data?.result?.hd || res.data?.result?.sd;
-        if (!dl) throw new Error('sin url');
-        const buf = await getBuffer(dl, { timeout: 120000 });
-        await conn.sendMessage(m.chat, { video: buf, mimetype: 'video/mp4', caption: '📥 Facebook' }, { quoted: m });
-    } catch { await m.reply('❌ No se pudo descargar el video de Facebook (servicio externo no disponible).'); }
+        const { facebookVideo } = await import('./providers.js');
+        const r = await facebookVideo(text.trim());
+        if (!r?.url) throw new Error('sin url');
+        const buf = await getBuffer(r.url, { timeout: 120000 });
+        if (!buf) throw new Error('descarga vacía');
+        await conn.sendMessage(m.chat, { video: buf, mimetype: 'video/mp4', caption: `📥 Facebook${r.quality ? ' · ' + r.quality : ''} 💜` }, { quoted: m });
+    } catch { await m.reply('🥺 No pude descargar ese video de Facebook ahora mismo. Intenta más tarde 💜'); }
         break;
     }
     case 'instagram': {
 
     if (!text || !/instagram\.com/.test(text)) return m.reply('Uso: .instagram <link>');
     try {
-        const res = await axios.get(`https://api.vreden.my.id/api/igdl?url=${encodeURIComponent(text.trim())}`, { timeout: 30000 });
-        const items = res.data?.result || [];
-        if (!items.length) throw new Error('sin resultados');
-        for (const it of items.slice(0, 5)) {
-            const url = it.url || it;
-            const buf = await getBuffer(url, { timeout: 120000 });
+        const { instagramMedia } = await import('./providers.js');
+        const r = await instagramMedia(text.trim());
+        if (!r?.items?.length) throw new Error('sin resultados');
+        for (const it of r.items.slice(0, 5)) {
+            const buf = await getBuffer(it.url, { timeout: 120000 });
             if (!buf) continue;
-            const isVid = /\.mp4|video/i.test(url) || it.type === 'video';
-            await conn.sendMessage(m.chat, isVid ? { video: buf, caption: '📥 Instagram' } : { image: buf, caption: '📥 Instagram' }, { quoted: m });
+            await conn.sendMessage(m.chat, it.type === 'video'
+                ? { video: buf, caption: '📥 Instagram 💜' }
+                : { image: buf, caption: '📥 Instagram 💜' }, { quoted: m });
         }
-    } catch { await m.reply('❌ No se pudo descargar de Instagram (servicio externo no disponible).'); }
+    } catch { await m.reply('🥺 No pude descargar de Instagram ahora mismo. Intenta más tarde 💜'); }
         break;
     }
     case 'igstalk': {
 
     if (!text) return m.reply('Uso: .igstalk <usuario>');
     try {
-        const res = await axios.get(`https://api.vreden.my.id/api/igstalk?username=${encodeURIComponent(text.replace('@', '').trim())}`, { timeout: 25000 });
-        const a = res.data?.result;
+        const { igStalk } = await import('./providers.js');
+        const a = await igStalk(text);
         if (!a) throw new Error('sin datos');
         await m.reply(`📷 *Instagram*\n\n• Usuario: ${a.username || text}\n• Nombre: ${a.fullName || a.fullname || '-'}\n• Posts: ${a.posts ?? '-'}\n• Seguidores: ${a.followers ?? '-'}\n• Siguiendo: ${a.following ?? '-'}\n• Bio: ${a.biography || a.bio || '-'}`);
     } catch { await m.reply('❌ No se pudo consultar el perfil (servicio externo no disponible).'); }
@@ -827,21 +829,35 @@ export async function execute(conn, m, cmd, args, text) {
     try { ({ default: yts } = await import('yt-search')); }
     catch { return m.reply('⚠️ Falta yt-search: npm i yt-search'); }
     try {
+        const { spotifySearch, spotifyDl } = await import('./providers.js');
+        // 1) Vía Spotify real (delirius): búsqueda o URL directa.
+        const isSpotifyUrl = /open\.spotify\.com\/track\//.test(text);
+        const track = isSpotifyUrl ? { url: text.trim(), title: null } : await spotifySearch(text);
+        if (track?.url) {
+            await m.react?.('🎧').catch(() => {});
+            const dl = await spotifyDl(track.url);
+            if (dl?.url) {
+                const buf = await getBuffer(dl.url, { timeout: 120000 });
+                if (buf) {
+                    await conn.sendMessage(m.chat, {
+                        audio: buf, mimetype: 'audio/mpeg',
+                        fileName: `${dl.title || track.title || 'spotify'}.mp3`,
+                    }, { quoted: m });
+                    break;
+                }
+            }
+        }
+        // 2) Fallback: YouTube (búsqueda + cadena ytAudioUrl).
         const q = text.replace(/https?:\/\/open\.spotify\.com\/\S+/g, '').trim() || text;
         const r = await yts(q);
         const v = r.videos?.[0];
         if (!v) return m.reply('Sin resultados.');
-        await m.reply(`🎵 *${v.title}*\nDescargando audio...`);
-        try {
-            const api = `https://api.vreden.my.id/api/ytmp3?url=${encodeURIComponent(v.url)}`;
-            const res = await axios.get(api, { timeout: 45000 });
-            const dl = res.data?.result?.download?.url || res.data?.result?.url;
-            if (!dl) throw new Error('no url');
-            const buf = await getBuffer(dl, { timeout: 120000 });
-            await conn.sendMessage(m.chat, { audio: buf, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
-        } catch {
-            await m.reply(`⚠️ Descarga directa no disponible ahora. Enlace:\n${v.url}`);
-        }
+        const { ytAudioUrl } = await import('./helpers.js');
+        const dl2 = await ytAudioUrl(v.url);
+        if (!dl2) return m.reply(`🥺 Descarga no disponible ahora. Enlace:\n${v.url}`);
+        const buf2 = await getBuffer(dl2, { timeout: 120000 });
+        if (!buf2) return m.reply(`🥺 Descarga no disponible ahora. Enlace:\n${v.url}`);
+        await conn.sendMessage(m.chat, { audio: buf2, mimetype: 'audio/mpeg', fileName: `${v.title}.mp3` }, { quoted: m });
     } catch (e) { await m.reply('❌ ' + (e?.message || e)); }
         break;
     }
@@ -849,14 +865,14 @@ export async function execute(conn, m, cmd, args, text) {
 
     if (!text) return m.reply('Uso: .pinterest <búsqueda>');
     try {
-        const res = await axios.get(`https://api.vreden.my.id/api/pinterest?query=${encodeURIComponent(text)}`, { timeout: 25000 });
-        const list = res.data?.result || res.data?.data || [];
-        const urls = (Array.isArray(list) ? list : []).map(x => x?.images_url || x?.url || x).filter(u => typeof u === 'string');
-        if (!urls.length) throw new Error('sin resultados');
+        const { pinterestSearch } = await import('./providers.js');
+        const urls = await pinterestSearch(text);
+        if (!urls?.length) throw new Error('sin resultados');
         const pick = urls[Math.floor(Math.random() * urls.length)];
         const buf = await getBuffer(pick, { timeout: 60000 });
-        await conn.sendMessage(m.chat, { image: buf, caption: `📌 Pinterest: ${text}` }, { quoted: m });
-    } catch { await m.reply('❌ No se pudo buscar en Pinterest (servicio externo no disponible).'); }
+        if (!buf) throw new Error('descarga vacía');
+        await conn.sendMessage(m.chat, { image: buf, caption: `📌 Pinterest: ${text} 💜` }, { quoted: m });
+    } catch { await m.reply('🥺 No encontré imágenes de eso en Pinterest ahora mismo. Intenta con otra búsqueda 💜'); }
         break;
     }
     case 'apk': {

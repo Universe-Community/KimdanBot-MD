@@ -38,7 +38,8 @@ const DEFAULT_CHAT = () => ({
     AntiYoutube: false, AntInstagram: false, AntiFacebook: false,
     AntiTelegram: false, AntiTiktok: false, AntiTwitter: false,
     autosticker: false, simi: false, viewonce: false,
-    economy: true, gacha: true, nsfw: false, onlyadmin: false, lang: null, botEnabled: true, detect: false,
+    muted: [],                      // números silenciados en este chat (.mute/.unmute)
+    economy: true, gacha: true, nsfw: false, onlyadmin: false, lang: null, botEnabled: true,
     warnlimit: 3,
     sBienvenida: '', sDespedida: '',
 });
@@ -72,6 +73,10 @@ class DB {
                         sticker: parsed.sticker || {},
                         others: parsed.others || {},
                     };
+                    // Migración de forma: rellena claves nuevas que falten en
+                    // registros viejos (p.ej. `muted`, `viewonce`) para que el
+                    // código nunca lea `undefined` tras una actualización.
+                    this._backfill();
                 }
             }
         } catch (e) {
@@ -80,7 +85,26 @@ class DB {
                 fs.copyFileSync(filepath, filepath + '.broken-' + Date.now());
             } catch { /* */ }
         }
-        setInterval(() => this.flush().catch(() => {}), 5000);
+        if (!this._flushTimer) {
+            this._flushTimer = setInterval(() => this.flush().catch(() => {}), 5000);
+            this._flushTimer.unref();
+        }
+    }
+
+    /** Añade a cada registro las claves por defecto que no tenga (shallow). */
+    _backfill() {
+        let changed = false;
+        const fill = (rec, defaults) => {
+            for (const k of Object.keys(defaults)) {
+                if (!(k in rec)) { rec[k] = defaults[k]; changed = true; }
+            }
+        };
+        try {
+            for (const u of Object.values(this.data.users)) fill(u, DEFAULT_USER());
+            for (const c of Object.values(this.data.chats)) fill(c, DEFAULT_CHAT());
+            for (const s of Object.values(this.data.settings)) fill(s, DEFAULT_SETTINGS());
+        } catch { /* */ }
+        if (changed) this._dirty = true;
     }
 
     markDirty() { this._dirty = true; }
@@ -98,6 +122,25 @@ class DB {
             this._dirty = true;
         } finally {
             this._writing = false;
+        }
+    }
+
+    /**
+     * Escritura SÍNCRONA para el cierre del proceso (SIGINT/SIGTERM).
+     * flush() es async y process.exit() no la espera, así que los últimos
+     * segundos de cambios podían perderse al apagar. Esta variante escribe
+     * de forma atómica (tmp + rename) antes de salir.
+     */
+    flushSync() {
+        if (!this._path) return;
+        if (!this._dirty && !this._writing) return;
+        try {
+            const tmp = this._path + '.tmp';
+            fs.writeFileSync(tmp, JSON.stringify(this.data));
+            fs.renameSync(tmp, this._path);
+            this._dirty = false;
+        } catch (e) {
+            console.error('[DB] Error en flushSync:', e.message);
         }
     }
 }

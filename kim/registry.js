@@ -39,12 +39,25 @@ export function command(meta, handler) {
 /** Lista cruda del registry (orden de registro). */
 export function getEntries() { return _entries; }
 
-/** Construye el Map<nombre, función> usado por el handler para dispatch. */
+/** Construye el Map<nombre, función> usado por el handler para dispatch.
+ *  Política ante colisiones: GANA EL PRIMER REGISTRO (los comandos base de
+ *  commands.js se cargan primero) y se emite un warning explícito. Antes,
+ *  un alias duplicado en un pack posterior SOBREESCRIBÍA silenciosamente
+ *  el comando original (así fue como .kick dejó de expulsar). */
 export function buildCmdMap() {
     const map = new Map();
+    const ownerOf = new Map(); // nombre → comando canónico que lo registró
     for (const e of _entries) {
         const names = [e.name, ...(e.aliases || [])];
-        for (const n of names) map.set(String(n).toLowerCase(), e.handler);
+        for (const n of names) {
+            const key = String(n).toLowerCase();
+            if (map.has(key)) {
+                console.warn(`[registry] ⚠️ Colisión: "${key}" ya está registrado por "${ownerOf.get(key)}" — se ignora el duplicado de "${e.name}".`);
+                continue;
+            }
+            map.set(key, e.handler);
+            ownerOf.set(key, e.name);
+        }
     }
     return map;
 }

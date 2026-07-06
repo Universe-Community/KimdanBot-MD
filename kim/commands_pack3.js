@@ -31,7 +31,9 @@ const INTERACTIONS = [
     [['poke'],'poke','{a} pica a {b} 👉'], [['slap'],'slap','{a} le da una bofetada a {b} 👋'],
     [['punch'],'punch','{a} golpea a {b} 🥊'], [['bite'],'bite','{a} muerde a {b} 😬'],
     [['tickle'],'tickle','{a} le hace cosquillas a {b} 🤭'], [['kill'],'shoot','{a} "elimina" a {b} 💀'],
-    [['kick'],'kick','{a} patea a {b} 🦵'], [['dance'],'dance','{a} baila 💃'], [['cry'],'cry','{a} llora 😭'],
+    // NOTA: la interacción de patada NO se llama 'kick' para no chocar con
+    // el comando de admin .kick (expulsar). Usar .patear / .patada.
+    [['patear','patada'],'kick','{a} patea a {b} 🦵'], [['dance'],'dance','{a} baila 💃'], [['cry'],'cry','{a} llora 😭'],
     [['laugh'],'laugh','{a} se ríe 😂'], [['happy','feliz'],'happy','{a} salta de felicidad 😄'],
     [['blush'],'blush','{a} se sonroja 😊'], [['pout'],'pout','{a} hace pucheros 😤'],
     [['jealous','celos'],'pout','{a} siente celos de {b} 😤💢'],
@@ -42,7 +44,7 @@ const INTERACTIONS = [
     [['scared'],'cry','{a} está asustado 😱'], [['sleep'],'sleep','{a} duerme 😴'], [['think'],'think','{a} piensa 🤔'],
     [['greet','hi'],'wave','{a} saluda 👋'], [['wink'],'wink','{a} guiña el ojo 😉'], [['smug'],'smug','{a} sonríe con superioridad 😏'],
     [['facepalm'],'facepalm','{a} se da una palmada 🤦'], [['clap','aplaudir'],'thumbsup','{a} aplaude 👏'],
-    [['run'],'run','{a} corre 🏃'], [['eat','comer'],'nom','{a} come 🍽️'], [['love','amor'],'hug','{a} ama a {b} 💗'],
+    [['run'],'run','{a} corre 🏃'], [['eat','comer'],'nom','{a} come 🍽️'], [['amar','amor'],'hug','{a} ama a {b} 💗'],
     [['lick'],'tickle','{a} lame a {b} 👅'], [['seduce'],'wink','{a} intenta seducir a {b} 😏'],
     [['push'],'kick','{a} empuja a {b}'], [['scream'],'cry','{a} grita 😱'], [['nope'],'nope','{a} se niega 🙅'],
     [['cook'],'nom','{a} cocina 🍳'], [['draw'],'think','{a} dibuja 🎨'], [['sing'],'happy','{a} canta 🎤'],
@@ -82,7 +84,7 @@ export async function execute(conn, m, cmd, args, text) {
         const out = phrase.replace('{a}', `@${m.sender.split('@')[0]}`).replace('{b}', t ? `@${t.split('@')[0]}` : '');
         const mentions = [m.sender]; if (t) mentions.push(t);
         // Interacciones románticas BL suman afinidad mutua
-        if (t && ['hug','kiss','kisscheek','cuddle','handhold','love','comfort','protect'].includes(cmd)) {
+        if (t && ['hug','kiss','kisscheek','cuddle','handhold','amar','comfort','protect'].includes(cmd)) {
             try { getUser(m.sender).affinity = (getUser(m.sender).affinity||0)+1; getUser(t).affinity = (getUser(t).affinity||0)+1; db.markDirty(); } catch { /* */ }
         }
         try {

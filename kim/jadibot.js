@@ -1,11 +1,10 @@
 // kim/jadibot.js — Fachada pública del sistema de sub-bots.
 // ─────────────────────────────────────────────────────────────────────
-// REESCRITO sobre la nueva arquitectura modular (kim/subbots/):
+// Arquitectura modular (kim/subbots/):
 //   • SubBotSession  → ciclo de vida + backoff + aislamiento por sesión.
 //   • SubBotManager  → registro central, persistencia y restore-on-boot.
-// Esta fachada conserva las MISMAS firmas que usaban los comandos
-// (startJadibot / stopJadibot / listJadibots) para no romper nada, pero
-// internamente delega todo en el manager. La UI de mensajes se modernizó.
+// Esta fachada expone las firmas que usan los comandos
+// (startJadibot / stopJadibot / listJadibots) y delega en el manager.
 
 import { createRequire } from 'module';
 import { manager } from './subbots/index.js';

@@ -29,6 +29,7 @@
 import chalk from 'chalk';
 import { getBuffer } from './helpers.js';
 import { getChat, getSettings, db } from './db.js';
+import { log } from './logger.js';
 
 // ─── TEXTOS centralizados ───────────────────────────────────────────
 
@@ -251,9 +252,9 @@ async function getUserPicBuffer(conn, jid) {
  * (fallback). Con timeout duro para detectar cuelgues.
  */
 async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = 'ann') {
-    console.log(chalk.cyan(
+    log.debug(
         `[ann] ${label} → ${chatJid?.split('@')[0]} (txt:${text.length}ch, pic:${picBuf ? picBuf.length + 'B' : 'null'}, mentions:${mentions?.length || 0})`
-    ));
+    );
 
     // Intento 1: imagen + caption (formato más confiable de v7)
     if (picBuf) {
@@ -269,12 +270,12 @@ async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = '
                 )),
             ]);
             if (result?.key?.id) {
-                console.log(chalk.green(`[ann] ✓ imagen+caption enviada, id: ${result.key.id}`));
+                log.debug(`[ann] ✓ imagen+caption enviada, id: ${result.key.id}`);
                 return result;
             }
-            console.warn(chalk.yellow('[ann] imagen+caption respondió sin id'));
+            log.warn(chalk.yellow('[ann] imagen+caption respondió sin id'));
         } catch (err) {
-            console.warn(chalk.yellow(`[ann] imagen+caption FALLÓ: ${err?.message || err}`));
+            log.warn(chalk.yellow(`[ann] imagen+caption FALLÓ: ${err?.message || err}`));
         }
     }
 
@@ -287,7 +288,7 @@ async function sendAnnouncement(conn, chatJid, text, mentions, picBuf, label = '
             )),
         ]);
         if (result?.key?.id) {
-            console.log(chalk.green(`[ann] ✓ texto plano enviado, id: ${result.key.id}`));
+            log.debug(`[ann] ✓ texto plano enviado, id: ${result.key.id}`);
             return result;
         }
     } catch (err) {
@@ -394,30 +395,30 @@ ${lines.join('\n')}
 async function onParticipantsUpdate(conn, event) {
     const { id: chatJid, participants, action, author } = event;
 
-    console.log(chalk.bold.magenta(
+    log.debug(
         `[ann] ${action} en ${chatJid?.split('@')[0]}: ${participants?.length} usuario(s) [author: ${author ? author.split('@')[0] : '—'}]`
-    ));
+    );
 
     if (!chatJid || !Array.isArray(participants) || participants.length === 0 || !action) {
-        console.warn(chalk.yellow('[ann] evento incompleto, se omite'));
+        log.debug('[ann] evento incompleto, se omite');
         return;
     }
 
     let chatCfg;
     try { chatCfg = getChat(chatJid); }
     catch (err) { console.error(chalk.red('[ann] getChat falló:'), err?.message); return; }
-    console.log(chalk.gray(`[ann] cfg → master:${chatCfg.allowAnnouncements} miembros:${chatCfg.notifyMembers} welcome:${chatCfg.welcome} bye:${chatCfg.bye} detect:${chatCfg.detect}`));
+    log.debug(`[ann] cfg → master:${chatCfg.allowAnnouncements} miembros:${chatCfg.notifyMembers} welcome:${chatCfg.welcome} bye:${chatCfg.bye} detect:${chatCfg.detect}`);
 
     // Atajo: si todos los anuncios de miembros están apagados, ni siquiera
     // entremos al bucle. Nos ahorramos fetchear metadata + fotos.
     if (!shouldAnnounce(chatCfg, 'notifyMembers')) {
-        console.log(chalk.gray('[ann] anuncios de miembros apagados — se omite todo'));
+        log.debug('[ann] anuncios de miembros apagados — se omite todo');
         return;
     }
 
     let meta = null;
     try { meta = await conn.groupMetadata(chatJid); }
-    catch (err) { console.warn(chalk.yellow('[ann] groupMetadata falló (uso fallbacks):'), err?.message); }
+    catch (err) { log.debug('[ann] groupMetadata falló (uso fallbacks):', err?.message); }
     const subject = meta?.subject || 'este grupo';
 
     const botJids = botIdentities(conn);
@@ -439,12 +440,12 @@ async function onParticipantsUpdate(conn, event) {
         const num = typeof participant === 'string'
             ? participant
             : (participant?.id ?? participant?.jid ?? '');
-        if (!num) { console.warn('[ann] participante sin JID, se omite'); continue; }
+        if (!num) { log.debug('[ann] participante sin JID, se omite'); continue; }
 
         const isBotItself = botJids.has(num);
         const numClean = num.split('@')[0];
 
-        console.log(chalk.gray(`[ann] participante: ${numClean} isBotItself=${isBotItself}`));
+        log.debug(`[ann] participante: ${numClean} isBotItself=${isBotItself}`);
         if (isBotItself) continue;
 
         // ── ¿Quién hizo la acción? 4 escenarios posibles ────────────
@@ -463,7 +464,7 @@ async function onParticipantsUpdate(conn, event) {
         const mentions = [numForMention];
         if (isByAdmin && authorForMention) mentions.push(authorForMention);
 
-        // ── FIX MENCIÓN (igual que el bot de referencia) ───────────
+        // ── FIX MENCIÓN ────────────────────────────────────────────
         // Una mención solo se renderiza como tag clickeable cuando el
         // @<número> del TEXTO coincide EXACTAMENTE con el user-part del
         // JID incluido en `mentions`. El bug anterior derivaba el número
@@ -584,7 +585,7 @@ async function onParticipantsUpdate(conn, event) {
             }
 
             else {
-                console.log(chalk.gray(`[ann] acción '${action}' omitida (cfg desactivada o no aplica)`));
+                log.debug(`[ann] acción '${action}' omitida (cfg desactivada o no aplica)`);
             }
 
         } catch (err) {
@@ -606,10 +607,10 @@ async function onGroupsUpdate(conn, updates) {
         if (global.__suppressGroupAnnounce && Date.now() < global.__suppressGroupAnnounce) continue;
 
         // Log diagnóstico: muestra qué campos cambió WhatsApp.
-        const fields = Object.keys(u).filter(k => k !== 'id');
-        console.log(chalk.bold.magenta(
-            `[announcements] groups.update en ${u.id.split('@')[0]}: ${fields.join(', ')}`
-        ));
+        if (log.enabled('debug')) {
+            const fields = Object.keys(u).filter(k => k !== 'id');
+            log.debug(`[announcements] groups.update en ${u.id.split('@')[0]}: ${fields.join(', ')}`);
+        }
 
         const chatCfg = getChat(u.id);
         // Atajo: si la categoría completa está apagada, salimos.
@@ -846,12 +847,36 @@ async function onPresenceUpdate(conn, { id, presences }) {
 function onContactsUpdate(conn, updates) {
     for (const u of updates || []) {
         if (u.id && (u.imgUrl !== undefined || u.notify)) {
-            console.log(chalk.gray(`[contacts] ${u.id.split('@')[0]}: ${u.notify || 'foto/nombre actualizado'}`));
+            log.debug(`[contacts] ${u.id.split('@')[0]}: ${u.notify || 'foto/nombre actualizado'}`);
         }
     }
 }
 
 // ─── API pública ────────────────────────────────────────────────────
+
+// Janitor único de caches en memoria (mensajes >1h, presencia/AFK >6h).
+// Se crea UNA sola vez sin importar cuántos sockets se conecten.
+let _janitorTimer = null;
+function _ensureCacheJanitor() {
+    if (_janitorTimer) return;
+    _janitorTimer = setInterval(() => {
+        const cutoff = Date.now() - MSG_TTL_MS;
+        for (const [chatJid, chatMap] of _messageCache) {
+            for (const [id, entry] of chatMap) {
+                if (entry.savedAt < cutoff) chatMap.delete(id);
+            }
+            if (chatMap.size === 0) _messageCache.delete(chatJid);
+        }
+        const presCutoff = Date.now() - 6 * 60 * 60 * 1000;
+        for (const [jid, ts] of _presenceCache) {
+            if (!ts || ts < presCutoff) _presenceCache.delete(jid);
+        }
+        for (const [jid, ts] of _afkBackCooldown) {
+            if (ts < presCutoff) _afkBackCooldown.delete(jid);
+        }
+    }, 30 * 60 * 1000);
+    _janitorTimer.unref();
+}
 
 /**
  * Conecta TODOS los listeners de anuncios a la conexión Baileys.
@@ -889,31 +914,13 @@ export function attachAnnouncements(conn) {    if (!conn?.ev) return;
     );
     conn.ev.on('contacts.update', (u) => onContactsUpdate(conn, u));
 
-    // Limpieza periódica del cache de mensajes (cada 30 min, mensajes >1h)
-    setInterval(() => {
-        const cutoff = Date.now() - MSG_TTL_MS;
-        for (const [chatJid, chatMap] of _messageCache) {
-            for (const [id, entry] of chatMap) {
-                if (entry.savedAt < cutoff) chatMap.delete(id);
-            }
-            if (chatMap.size === 0) _messageCache.delete(chatJid);
-        }
-        // Poda de _presenceCache y _afkBackCooldown: sin esto crecen sin
-        // límite (una entrada por cada JID que alguna vez estuvo online o
-        // volvió de AFK). Se eliminan las entradas más viejas que 6h.
-        const presCutoff = Date.now() - 6 * 60 * 60 * 1000;
-        for (const [jid, ts] of _presenceCache) {
-            if (!ts || ts < presCutoff) _presenceCache.delete(jid);
-        }
-        for (const [jid, ts] of _afkBackCooldown) {
-            if (ts < presCutoff) _afkBackCooldown.delete(jid);
-        }
-    }, 30 * 60 * 1000).unref();
+    // Limpieza periódica de caches en memoria. IMPORTANTE: es un timer
+    // ÚNICO a nivel de módulo (las caches también son de módulo). Antes se
+    // creaba UN setInterval por cada socket que pasaba por aquí (bot
+    // principal + cada sub-bot + cada reconexión) → acumulación de timers.
+    _ensureCacheJanitor();
 
-    console.log(chalk.cyan('[announcements] ✓ welcome/bye/promote/demote'));
-    console.log(chalk.cyan('[announcements] ✓ anti-llamada'));
-    console.log(chalk.cyan('[announcements] ✓ anti-delete + edit log'));
-    console.log(chalk.cyan('[announcements] ✓ AFK presence tracking'));
+    log.info(chalk.cyan('[announcements] ✓ welcome/bye · promote/demote · anti-llamada · anti-delete · edit-log · AFK'));
 }
 
 // Hook de prueba para el comando #testwelcome / #testgoodbye.

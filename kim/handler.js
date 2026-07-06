@@ -25,8 +25,9 @@ import chalk from 'chalk';
 import { smsg, getGroupAdmins } from './helpers.js';
 import { getUser, getChat, getSettings, db } from './db.js';
 import { runMiddleware } from './middleware.js';
+import { log } from './logger.js';
 import './commands.js'; // ← side-effect import: registra TODOS los comandos
-import './commands_extra.js'; // ← comandos migrados desde el bot de referencia
+import './commands_extra.js'; // ← descargas, utilidades, biblioteca, BL extra
 import './commands_pack2.js'; // ← #tag + economía oficial JX/HG/AP + actividad + afinidad
 import './commands_pack3.js'; // ← gacha BL/Yaoi + interacciones anime SFW (GIFs)
 import './commands_pack4.js'; // ← perfiles, admin, utilidades, descargas, subbots
@@ -34,6 +35,8 @@ import './commands_pack5.js'; // ← sistema BL: búsqueda manga/manhwa/novelas 
 import './commands_pack6.js'; // ← sistema completo de stickers y packs
 import './commands_pack7.js'; // ← VIP + comandos owner de economía (dar/quitar dinero, exp, diamantes)
 import './commands_pack8.js'; // ← gestión de comunidades (auditoría/limpieza) + multikick
+import './commands_pack9.js'; // ← mantenimiento owner: .authclean, .authstatus, .loglevel
+import './commands_pack10.js'; // ← soundcloud/threads/ttimg, utilidades, juegos, mute, anti-viewonce, chat anónimo
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 
@@ -418,12 +421,17 @@ export class Handler {
                         m.isSenderAdmin = isSender;
                         m.groupAdmins   = admins;
 
-                        console.log(chalk.gray(
-                            `[perm] sender=[${[...senderSet].join(' | ')}] ` +
-                            `admins=[${[...adminSet].slice(0, 4).join(' | ')}${adminSet.size > 4 ? ' …' : ''}] ` +
-                            `bot=[${[...botSet].join(' | ')}] ` +
-                            `→ isSenderAdmin:${isSender} isBotAdmin:${isBot} isOwner:${m.isOwner}`
-                        ));
+                        // Diagnóstico de permisos: SOLO con LOG_LEVEL=debug.
+                        // (Antes se imprimía en CADA comando de grupo y era la
+                        // principal fuente de ruido en consola.)
+                        if (log.enabled('debug')) {
+                            log.debug(
+                                `[perm] sender=[${[...senderSet].join(' | ')}] ` +
+                                `admins=[${[...adminSet].slice(0, 4).join(' | ')}${adminSet.size > 4 ? ' …' : ''}] ` +
+                                `bot=[${[...botSet].join(' | ')}] ` +
+                                `→ isSenderAdmin:${isSender} isBotAdmin:${isBot} isOwner:${m.isOwner}`
+                            );
+                        }
                     } else {
                         // Mensaje normal (no comando): admins en forma simple,
                         // sin expansión LID (no se necesita y sería caro).
@@ -480,6 +488,7 @@ export class Handler {
     }
 
     _logMsg(m, body) {
+        if (!log.enabled('info')) return;
         try {
             const hh = new Date().toTimeString().slice(0, 8);
             const place = m.isGroup ? chalk.cyan(m.groupName || 'grupo') : chalk.gray('priv');

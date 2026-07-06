@@ -1,9 +1,11 @@
 // kim/middleware.js — Anti-* + AFK condicionales (ESM).
 
-import { clockString } from './helpers.js';
-import { getUser, getChat, getSettings } from './db.js';
+import { clockString, downloadMediaMessage } from './helpers.js';
+import { getUser, getChat, getSettings, db } from './db.js';
+import { checkGameAnswer } from './games.js';
+import { relayAnonMessage } from './anonchat.js';
 
-const TOXIC_REGEX = /\b(g0re|sap0|sap4|malparid[oa]s?|chocha|chup4l[ao]|chupon|sabandija|hijodelagranputa|hijodeputa|hijadeputa|kbron[a]?|laconchadedios|putit[oa]|put[oa]|coñ[oa]|afeminado|drog4s?|cocaín?a|marihuana|chocho|cagon|pedorr[oa]s?|nmms|mamar|chigadamadre|hijueputa|chupa|caca|bobo|loca?|estupid[oa]s?|pollas?|idiota|maricon|chucha|verga|naco|zorr[oa]s?|huevon[a]?|kbrones|cabron|capullo|carajo|gore|sap[oa]|mierda|cerd[oa]|puerc[oa]|perr[oa]|qliao|imbecil|fuck|shit|bullshit|cunt|bitch|motherfucker)\b/i;
+const TOXIC_REGEX = /\b(g0re|sap0|sap4|malparid[oa]s?|chocha|chup4l[ao]|chupon|sabandija|hijodelagranputa|hijodeputa|hijadeputa|kbron[a]?|laconchadedios|putit[oa]|put[oa]|coñ[oa]|afeminado|drog4s?|cocaín?a|marihuana|chocho|cagon|pedorr[oa]s?|nmms|chigadamadre|hijueputa|estupid[oa]s?|pollas?|idiota|maricon|chucha|verga|naco|zorr[oa]s?|huevon[a]?|kbrones|cabron|capullo|carajo|gore|sap[oa]|mierda|cerd[oa]|puerc[oa]|qliao|imbecil|fuck|shit|bullshit|cunt|bitch|motherfucker)\b/i;
 
 const ANTIFAKE_PREFIXES = ['1', '994', '48', '43', '40', '41', '49'];
 const ANTIARABE_PREFIXES = ['212', '265', '234', '258', '263', '967', '20', '92', '91'];
@@ -34,10 +36,50 @@ export async function runMiddleware(conn, m) {
     const botJid = conn.user?.jid || conn.decodeJid?.(conn.user?.id);
     const settings = botJid ? getSettings(botJid) : null;
 
+    // ── Chat anónimo: reenvío de mensajes privados sin prefijo ──
+    if (!m.isGroup && !m._isCmd) {
+        const consumed = await relayAnonMessage(conn, m).catch(() => false);
+        if (consumed) return true;
+    }
+
+    // ── Usuarios muteados en este chat: borrar sus mensajes ──
+    // (lista por grupo en chatCfg.muted; requiere bot admin; los admins
+    //  y el owner nunca se filtran)
+    if (m.isGroup && Array.isArray(chatCfg?.muted) && chatCfg.muted.length
+        && !m.fromMe && !m.isOwner && !m.isSenderAdmin && m.isBotAdmin !== false) {
+        const forms = new Set([m.sender, m.senderAlt].filter(Boolean).map(j => String(j).split('@')[0]));
+        if (chatCfg.muted.some(num => forms.has(String(num).split('@')[0]))) {
+            try { await conn.sendMessage(m.chat, { delete: m.key }); } catch { /* */ }
+            return true;
+        }
+    }
+
+    // ── Anti view-once: revela el contenido de "ver una vez" ──
+    if (m.isGroup && chatCfg?.viewonce && m.isViewOnce && m.msg
+        && /imageMessage|videoMessage/.test(m.mtype || '')) {
+        try {
+            const buf = await downloadMediaMessage(m.msg, m.mtype.replace('Message', ''));
+            if (buf) {
+                const caption = `👁️ *Ver-una-vez revelado*\n🍓 De: @${m.sender.split('@')[0]}${m.msg.caption ? '\n💬 ' + m.msg.caption : ''}`;
+                await conn.sendMessage(m.chat, m.mtype === 'videoMessage'
+                    ? { video: buf, caption, mentions: [m.sender], mimetype: 'video/mp4' }
+                    : { image: buf, caption, mentions: [m.sender] }, { quoted: m });
+            }
+        } catch { /* */ }
+        // no se consume: el mensaje sigue el flujo normal
+    }
+
+    // ── Minijuegos: consumir respuestas (número, letra, casilla…) ──
+    if (!m._isCmd && m.text) {
+        const played = await checkGameAnswer(conn, m).catch(() => false);
+        if (played) return true;
+    }
+
     if (m._isCmd && chatCfg?.antispam && !m.isOwner) {
         const last = userCfg.spam || 0;
         if (Date.now() - last < SPAM_WINDOW_MS) return true;
         userCfg.spam = Date.now();
+        db.markDirty();
     }
 
     if (!m.isGroup && !m.isOwner && settings?.antiprivado) {
@@ -118,6 +160,7 @@ export async function runMiddleware(conn, m) {
     if (chatCfg.antitoxic && !m.isSenderAdmin && !m.isOwner) {
         if (TOXIC_REGEX.test(m.text || '')) {
             userCfg.warn = (userCfg.warn || 0) + 1;
+            db.markDirty();
             const max = parseInt(global.maxwarn) || 4;
             try {
                 if (userCfg.warn >= max) {
@@ -148,6 +191,7 @@ export async function runMiddleware(conn, m) {
         } catch { /* */ }
         userCfg.afkTime = -1;
         userCfg.afkReason = '';
+        db.markDirty();
     }
 
     const mentioned = [
@@ -171,12 +215,21 @@ export async function runMiddleware(conn, m) {
     return false;
 }
 
+/**
+ * Indica si `runMiddleware` tiene algo que hacer para este mensaje.
+ * NOTA: el handler llama a `runMiddleware` en TODOS los mensajes (los
+ * hooks de juegos, chat anónimo, mute y anti-viewonce se resuelven ahí),
+ * así que esta función es solo un ayudante opcional para diagnósticos.
+ */
 export function shouldRunMiddleware(m, chatCfg, settings) {
     if (m._isCmd) return true;
-    if (!m.isGroup) return !!settings?.antiprivado;
+    // Mensajes sin prefijo aún pueden disparar juegos o chat anónimo.
+    if (m.text) return true;
+    if (!m.isGroup) return !!(settings?.antiprivado);
     if (!chatCfg) return false;
     return !!(chatCfg.antilink || chatCfg.antilink2 || chatCfg.antitoxic ||
               chatCfg.antifake || chatCfg.antiarabe || chatCfg.antispam ||
+              chatCfg.viewonce || (Array.isArray(chatCfg.muted) && chatCfg.muted.length) ||
               chatCfg.AntiYoutube || chatCfg.AntInstagram || chatCfg.AntiFacebook ||
               chatCfg.AntiTelegram || chatCfg.AntiTiktok || chatCfg.AntiTwitter);
 }

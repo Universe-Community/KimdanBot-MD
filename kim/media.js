@@ -148,3 +148,49 @@ export function pruneGifCache(days = 14) {
 }
 
 export const GIF_DIR = GIF_ROOT;
+
+// ─── Imágenes locales aleatorias (para .pruebaimagen y afines) ──────────
+// Lee imágenes de una carpeta local y devuelve una al azar. Busca la
+// carpeta tanto en la raíz del proyecto (./<nombre>) como dentro de
+// ./media/<nombre>, para que "una carpeta con el mismo título" funcione
+// sin importar dónde la coloque el usuario. Usa la misma caché de listado
+// con TTL que los GIFs, para no hacer readdir en cada invocación.
+const IMG_EXT = /\.(jpe?g|png|webp|gif|bmp)$/i;
+
+function imagesOf(dir) {
+    const now = Date.now();
+    const cacheKey = 'img:' + dir;
+    const c = _dirCache.get(cacheKey);
+    if (c && now - c.ts < DIR_TTL) return c.files;
+    let files = [];
+    try {
+        if (fs.existsSync(dir)) files = fs.readdirSync(dir).filter(f => IMG_EXT.test(f));
+    } catch { /* */ }
+    _dirCache.set(cacheKey, { files, ts: now });
+    return files;
+}
+
+/**
+ * Devuelve { buffer, filename, dir, count } de una imagen aleatoria de la
+ * carpeta `folderName`, o null si no hay ninguna. Prueba ./<folder> y
+ * ./media/<folder>.
+ */
+export async function getRandomImage(folderName) {
+    const safe = String(folderName).replace(/[^\w-]/g, '_');
+    const candidates = [
+        path.resolve('.', safe),
+        path.join(GIF_ROOT, '..', safe),   // ./media/<folder>
+    ];
+    for (const dir of candidates) {
+        const files = imagesOf(dir);
+        if (!files.length) continue;
+        const pick = files[Math.floor(Math.random() * files.length)];
+        const fp = path.join(dir, pick);
+        try {
+            if (HOT.has(fp)) { const b = HOT.get(fp); touchHot(fp, b); return { buffer: b, filename: pick, dir, count: files.length }; }
+            const buf = await fs.promises.readFile(fp);
+            if (buf?.length > 100) { touchHot(fp, buf); return { buffer: buf, filename: pick, dir, count: files.length }; }
+        } catch { /* siguiente candidato */ }
+    }
+    return null;
+}
