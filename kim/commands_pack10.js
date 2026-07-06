@@ -145,11 +145,11 @@ export async function execute(conn, m, cmd, args, text) {
         break;
     }
 
-    case 'pruebaimagen': {
+    case 'pene': {
         // Envía una imagen aleatoria de la carpeta "pruebaimagen"
         // (se busca en ./pruebaimagen y en ./media/pruebaimagen).
         try {
-            await m.react?.('🖼️').catch(() => {});
+            await m.react?.('🍆').catch(() => {});
             const img = await getRandomImage('pruebaimagen');
             if (!img) {
                 return m.reply(
@@ -160,10 +160,10 @@ export async function execute(conn, m, cmd, args, text) {
             }
             await conn.sendMessage(m.chat, {
                 image: img.buffer,
-                caption: `🖼️ *Imagen aleatoria* ✨\n₊˚ ${img.count} imagen${img.count === 1 ? '' : 'es'} en la carpeta 💜`,
+                caption: `🍆 *pene aleatorio* 😏\n₊˚ ${img.count} pene${img.count === 1 ? '' : 'es'} en la carpeta 😮‍💨`,
             }, { quoted: m });
         } catch (e) {
-            await m.reply('🥺 No pude enviar la imagen: ' + (e?.message || e));
+            await m.reply('🥺 No pude enviar el pene: ' + (e?.message || e));
         }
         break;
     }
