@@ -150,7 +150,7 @@ export async function execute(conn, m, cmd, args, text) {
         // (se busca en ./pruebaimagen y en ./media/pruebaimagen).
         try {
             await m.react?.('🍆').catch(() => {});
-            const img = await getRandomImage('pruebaimagen');
+            const img = await getRandomImage('pene');
             if (!img) {
                 return m.reply(
                     '🖼️ *Carpeta pruebaimagen vacía* 🫐\n\n' +
