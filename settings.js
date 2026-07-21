@@ -25,6 +25,23 @@ global.lenguaje = es;
 // mensajes que no empiezan con uno de estos se descartan en microsegundos.
 global.prefix = ['.', '#'];
 
+// ═════════════ MANTENIMIENTO DE SESIÓN (authFolder) ═════════════
+// Ver kim/authcare.js. IMPORTANTE: la limpieza NO poda claves de Signal por
+// antigüedad — eso corrompía la sesión (borraba pre-keys aún válidas y
+// anunciadas en el servidor). Solo sanea archivos corruptos/vacíos. Una
+// carpeta grande es normal y sana. Sobrescribible por variables de entorno
+// (AUTHCARE_*). No hace falta tocar esto para un funcionamiento correcto.
+global.authCare = {
+    enabled: true,        // integridad automática activada
+    intervalHours: 3,     // cada 3h (barato y seguro: no borra claves válidas)
+    graceMinutes: 5,      // no tocar archivos más nuevos que esto (evita carreras)
+    deepStartup: true,    // al arrancar, validar JSON a fondo (recupera de crashes)
+    hard: {               // SOLO para .authclean --hard (manual, presión de disco)
+        sessionDays: 90,      // poda session-* sin actividad > 90 días
+        senderKeyDays: 60,    // poda sender-key-* sin actividad > 60 días
+    },
+};
+
 // ═════════════ APIS (sin cambios) ═════════════
 const keysZens = ['LuOlangNgentot', 'c2459db922', '37CC845916', '6fb0eff124', 'hdiiofficial', 'fiktod', 'BF39D349845E', '675e34de8a', '0b917b905e6f'];
 global.keysxxx = keysZens[Math.floor(Math.random() * keysZens.length)];
