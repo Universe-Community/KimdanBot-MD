@@ -1,14 +1,21 @@
 // kim/commands_pack9.js — Mantenimiento y diagnóstico (owner).
 // ─────────────────────────────────────────────────────────────────────
-//   .authclean [--dry]  → poda manual del authFolder (segura, forzada)
-//   .authstatus         → estado de acumulación de la sesión (solo lectura)
-//   .loglevel <nivel>   → cambia el nivel de logs en caliente
+//   .authclean [--dry] [--hard]
+//        Sanea la sesión: elimina archivos de clave CORRUPTOS/vacíos (torn
+//        writes). NUNCA borra claves válidas por antigüedad.
+//        --dry   simula (no borra nada).
+//        --hard  además poda session-*/sender-key-* MUY antiguos (90/60 días
+//                por defecto). Válvula de escape ante presión real de disco;
+//                jamás toca pre-keys, identity, app-state, lid-mapping,
+//                device-list, tctoken ni creds.
+//   .authstatus  → estado de acumulación de la sesión (solo lectura).
+//   .loglevel <nivel> → cambia el nivel de logs en caliente.
 
 import fs from 'fs';
 import path from 'path';
 import { command } from './registry.js';
 import { log } from './logger.js';
-import { runAuthCare, getAuthCareConfig } from './authcare.js';
+import { runAuthCare, getAuthCareConfig, categorize } from './authcare.js';
 import { box } from './ui.js';
 
 const AUTH_DIR = './authFolder';
@@ -25,23 +32,34 @@ export const authclean = command({
     name: 'authclean',
     aliases: ['cleansession', 'limpiarsesion'],
     category: 'owner',
-    description: 'Poda archivos de sesión obsoletos (seguro; usa --dry para simular)',
+    description: 'Sanea la sesión (corruptos/vacíos). --dry simula · --hard poda sesiones muy antiguas',
 }, async (conn, m, args) => {
     if (!needOwner(m)) return;
     const dryRun = args.includes('--dry') || args.includes('-n');
+    const hard   = args.includes('--hard');
     await m.react?.('🧹').catch(() => {});
-    const results = await runAuthCare(AUTH_DIR, { force: true, dryRun });
-    if (!results.length) return m.reply('🍃 El mantenimiento de sesión está desactivado o no hay carpetas de auth.');
+
+    // Manual: deep=true (valida JSON), force=true (aunque esté deshabilitado).
+    const results = await runAuthCare(AUTH_DIR, { force: true, dryRun, deep: true, hard });
+    if (!results.length) return m.reply('🍃 No hay carpetas de auth que revisar.');
+
     const lines = [];
-    let totalDel = 0, totalBytes = 0;
+    let totalCorrupt = 0, totalHard = 0, totalBytes = 0, credsCorrupt = false;
     for (const r of results) {
-        totalDel += r.deleted; totalBytes += r.freedBytes;
-        lines.push(`📁 ${path.basename(r.dir)}: ${r.deleted}/${r.prunable} podados (${fmtBytes(r.freedBytes)})`);
+        totalCorrupt += r.corruptDeleted; totalHard += r.hardPruned; totalBytes += r.freedBytes;
+        if (r.credsCorrupt) credsCorrupt = true;
+        lines.push(
+            `📁 ${path.basename(r.dir)}: ${r.corruptDeleted} saneado(s)` +
+            (hard ? ` · ${r.hardPruned} podado(s) [hard]` : '')
+        );
     }
     lines.push('');
-    lines.push(dryRun ? '🔍 Modo simulación (--dry): no se borró nada.' : '✅ creds.json y AppState Keys intactos.');
-    lines.push(`🧮 Total: ${totalDel} archivo(s), ${fmtBytes(totalBytes)}.`);
-    await m.reply(box('🧹 LIMPIEZA DE SESIÓN', lines));
+    if (credsCorrupt) lines.push('⚠️ *creds.json corrupto detectado* — NO se eliminó. Restaura backup o re-vincula.');
+    lines.push(dryRun ? '🔍 Modo simulación (--dry): no se borró nada.'
+                      : '✅ pre-keys, app-state, identity y creds intactos.');
+    if (!hard) lines.push('ℹ️ Usa *--hard* solo si necesitas liberar disco (poda sesiones/sender-keys > 90/60 días).');
+    lines.push(`🧮 Total: ${totalCorrupt} saneado(s)` + (hard ? ` + ${totalHard} podado(s)` : '') + `, ${fmtBytes(totalBytes)}.`);
+    await m.reply(box('🧹 SANEO DE SESIÓN', lines));
 });
 
 export const authstatus = command({
@@ -54,16 +72,31 @@ export const authstatus = command({
     const cfg = getAuthCareConfig();
     let names = [];
     try { names = await fs.promises.readdir(AUTH_DIR); } catch { /* */ }
-    const count = (re) => names.filter(n => re.test(n)).length;
+
+    const c = { preKey: 0, session: 0, senderKey: 0, senderKeyMemory: 0,
+                identityKey: 0, appState: 0, lidMapping: 0, deviceList: 0,
+                tcToken: 0, unknown: 0 };
+    for (const n of names) {
+        const cat = categorize(n);
+        if (cat === 'appStateSyncKey' || cat === 'appStateSyncVersion') c.appState++;
+        else if (c[cat] !== undefined) c[cat]++;
+        else if (cat !== 'creds') c.unknown++;
+    }
+
     const lines = [
         `📦 Archivos totales: *${names.length}*`,
-        `🔑 pre-keys: ${count(/^pre-key-/i)}`,
-        `👤 sesiones: ${count(/^session-/i)}`,
-        `👥 sender-keys: ${count(/^sender-key/i)}`,
-        `🛡️ app-state (protegidos): ${count(/^app-state-sync-/i)}`,
+        `🔑 pre-keys (no consumidas): ${c.preKey}`,
+        `👤 sesiones Signal: ${c.session}`,
+        `👥 sender-keys: ${c.senderKey}  ·  memory: ${c.senderKeyMemory}`,
+        `🪪 identity-keys: ${c.identityKey}  ·  lid-map: ${c.lidMapping}`,
+        `🛡️ app-state (protegido): ${c.appState}  ·  device-list: ${c.deviceList}  ·  tctoken: ${c.tcToken}`,
         '',
-        `⚙️ Auto-limpieza: ${cfg.enabled ? `activa cada ${cfg.intervalHours}h` : 'desactivada'}`,
-        `📏 Umbral: ${cfg.minFiles} podables · edades: pre-key ${cfg.maxAgeDays.preKey}d / sesión ${cfg.maxAgeDays.session}d / sender-key ${cfg.maxAgeDays.senderKey}d`,
+        'ℹ️ Una carpeta grande es *normal y sana* (un archivo por clave).',
+        'Baileys elimina cada clave cuando deja de necesitarla; no se poda por antigüedad.',
+        '',
+        `⚙️ Integridad automática: ${cfg.enabled ? `activa cada ${cfg.intervalHours}h` : 'desactivada'}`,
+        `🩹 Solo sanea corruptos/vacíos (gracia ${cfg.graceMinutes} min). Nunca borra claves válidas.`,
+        `🧯 Modo hard manual: sesiones > ${cfg.hard.sessionDays}d · sender-keys > ${cfg.hard.senderKeyDays}d`,
     ];
     await m.reply(box('🗂️ ESTADO DE LA SESIÓN', lines));
 });
