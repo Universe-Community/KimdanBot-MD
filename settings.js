@@ -12,7 +12,6 @@ global.owner = [
     ['573044062173', '', false],
     ['50685690440',  '', false],
     ['573173090446',  'owner', true],
-    ['573044216796',  'andre', true],
 ];
 global.vip = [...global.owner];
 global.aport = [...global.vip];
@@ -25,6 +24,36 @@ global.lenguaje = es;
 // Solo `.` y `#`. El handler hace fast-filter con esta lista — los
 // mensajes que no empiezan con uno de estos se descartan en microsegundos.
 global.prefix = ['.', '#'];
+
+// ═════════════ FILTRADO DE LOGS ═════════════
+// Controla qué ruido interno del protocolo de WhatsApp se imprime.
+// TODO en false = consola limpia (solo información útil: comandos, errores,
+// reconexiones, estado del bot). Pon cualquiera en true para depurar.
+//
+//   showProtocolMessages  → protocolMessage, historySyncNotification,
+//                           deviceSentMessage, ephemeral/viewOnce/keepInChat…
+//   showSenderKeyMessages → senderKeyDistributionMessage (claves de grupo)
+//   showStickerMessages   → stickerMessage sin texto
+//   showReactionMessages  → reactionMessage / pollUpdateMessage
+//   showPresenceMessages  → cambios de presencia (escribiendo/en línea)
+//   showSignalMessages    → ruido de libsignal ("Decrypted message with
+//                           closed session", "Closing session", "Bad MAC"…).
+//                           Son mensajes NORMALES del Signal Protocol, no
+//                           errores. Actívalo solo para depurar cifrado.
+//   showDebugMessages     → equivale a LOG_LEVEL=debug
+global.logFilter = {
+    showProtocolMessages:  false,
+    showSenderKeyMessages: false,
+    showStickerMessages:   false,
+    showReactionMessages:  false,
+    showPresenceMessages:  false,
+    showSignalMessages:    false,
+    showDebugMessages:     false,
+};
+
+// Nivel de consola: silent | error | warn | info | debug
+// (LOG_LEVEL en el entorno tiene prioridad sobre esto)
+global.logLevel = global.logFilter.showDebugMessages ? 'debug' : 'info';
 
 // ═════════════ MANTENIMIENTO DE SESIÓN (authFolder) ═════════════
 // Ver kim/authcare.js. IMPORTANTE: la limpieza NO poda claves de Signal por

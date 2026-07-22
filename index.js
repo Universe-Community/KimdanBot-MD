@@ -72,20 +72,42 @@ import { serializeConn } from './kim/helpers.js';
 import { initDB } from './kim/db.js';
 import { attachAnnouncements } from './kim/announcements.js';
 import { startAuthCare, stopAuthCare } from './kim/authcare.js';
+import { startExpiryService, stopExpiryService } from './kim/subbots/expiry.js';
 
 // ═══════════════════════════════════════════════════════════════════════
 // FILTRO DE RUIDO DE LIBSIGNAL
 // ═══════════════════════════════════════════════════════════════════════
+// El paquete `libsignal` (dependencia de Baileys) registra mensajes internos
+// del Signal Protocol con console.warn/error/info DIRECTOS — NO pasan por el
+// logger pino de Baileys, así que `level:'silent'` no los silencia. Son
+// funcionamiento normal del protocolo (sesiones que se abren/cierran/archivan,
+// descifrado de backlog con sesión superada, etc.), no errores. Se filtran por
+// defecto y pueden reactivarse con global.logFilter.showSignalMessages=true.
 (() => {
     const NOISE = [
-        /Bad MAC/i, /Closing session/i, /Closing open session/i,
-        /SessionEntry\s*\{/, /No matching sessions/i, /No session record/i,
-        /Failed to decrypt/i, /Session error:Error/i,
+        // libsignal/src/session_cipher.js
+        /Decrypted message with closed session/i,
+        /Failed to decrypt message with any known session/i,
+        /Session error:Error/i, /No matching sessions found for message/i,
+        /No session record/i, /No sessions available/i,
+        // libsignal/src/session_builder.js
+        /Closing (open |stale open )?session/i,
+        /Closing session in favor of incoming prekey bundle/i,
+        // libsignal/src/session_record.js
+        /Session already (closed|open)/i, /Opening session:/i,
+        /Removing old closed session/i, /Migrating session to:/i,
+        /V1 session storage migration/i,
+        // libsignal/src/curve.js + queue_job.js
+        /WARNING: Expected pubkey of length 33/i, /Unhandled bucket type/i,
+        // genéricos de descifrado / stacks de libsignal
+        /Bad MAC/i, /SessionEntry\s*\{/, /Failed to decrypt/i,
         /at Object\.verifyMAC/, /at SessionCipher\./,
-        /at async _asyncQueueExecutor/, /libsignal\/src\//,
+        /at async _asyncQueueExecutor/, /libsignal[\/\\]src[\/\\]/,
     ];
     const safeInspect = (a) => { try { return util.inspect(a, { depth: 1 }).slice(0, 200); } catch { return ''; } };
     const isNoise = (args) => {
+        // Interruptor de depuración: reactiva TODO el ruido de Signal.
+        if (global.logFilter?.showSignalMessages === true) return false;
         for (const a of args) {
             const s = typeof a === 'string' ? a
                 : (a?.stack || a?.message || (typeof a === 'object' ? safeInspect(a) : String(a)));
@@ -126,6 +148,23 @@ async function notifyOwner(text) {
     if (!jid || !global.kim) return;
     try { await global.kim.sendMessage(jid, { text: String(text).slice(0, 1500) }); }
     catch (e) { console.error('[INDEX] notifyOwner:', e?.message || e); }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// destroySocket — desmonta POR COMPLETO un socket anterior antes de crear
+// otro. CAUSA RAÍZ de "Decrypted message with closed session" amplificado,
+// creds.update duplicados y fugas: en cada reconexión se creaba un socket
+// nuevo (con sus listeners, su saveCreds y sus timers) SIN cerrar el
+// anterior. Varios sockets compartiendo el MISMO authFolder = múltiples
+// escritores de creds/sesiones Signal → más apertura/cierre de sesiones,
+// más eventos de "closed session" y carreras de escritura. Aquí se cierra
+// el WebSocket, se quitan TODOS los listeners y se sueltan las referencias.
+function destroySocket(sock) {
+    if (!sock) return;
+    try { sock.ev?.removeAllListeners?.(); } catch { /* */ }
+    try { sock.ws?.removeAllListeners?.(); } catch { /* */ }
+    try { sock.end?.(undefined); } catch { /* */ }
+    try { sock.ws?.close?.(); } catch { /* */ }
 }
 
 process.on('uncaughtException', (err) => {
@@ -307,6 +346,11 @@ async function start() {
     }
     global._isStarting = true;
 
+    // Desmonta cualquier socket previo ANTES de crear uno nuevo. Sin esto,
+    // cada reconexión dejaba vivo el socket anterior (listeners + saveCreds +
+    // timers duplicados) compartiendo el authFolder → inestabilidad de sesión.
+    if (global.kim) { destroySocket(global.kim); global.kim = null; global.conn = null; }
+
     try {
         mostrarBanner();
         if (!global.db?.data) await initDB(DB_PATH);
@@ -403,6 +447,11 @@ async function start() {
         // deja de necesitarla; una carpeta grande es normal y sana.
         startAuthCare(AUTH_PATH);
 
+        // ─ Servicio de expiración de licencias de sub-bots ─
+        // Barrido indexado cada 10 min: cierra sesiones vencidas, libera
+        // recursos y avisa al owner. Idempotente y con timer unref().
+        startExpiryService({ notify: notifyOwner });
+
         // ─ Restaurar sub-bots persistidos al conectar el bot principal ─
         // (nueva arquitectura kim/subbots/: reconexión automática tolerante a fallos)
         conn.ev.on('connection.update', async (update) => {
@@ -458,11 +507,12 @@ async function start() {
 function shutdown(signal) {
     console.log(chalk.yellow(`\n[INDEX] Cerrando bot (${signal})...`));
     try { stopAuthCare(); } catch { /* */ }
+    try { stopExpiryService(); } catch { /* */ }
     // flushSync: escritura síncrona garantizada ANTES de salir. La versión
     // anterior llamaba flush() (async) y process.exit(0) no la esperaba,
     // así que los cambios de los últimos segundos podían perderse.
     if (global.db) try { global.db.flushSync?.(); } catch { /* */ }
-    if (global.kim?.end) try { global.kim.end(undefined); } catch { /* */ }
+    if (global.kim) try { destroySocket(global.kim); } catch { /* */ }
     if (!rl.closed) rl.close();
     process.exit(0);
 }

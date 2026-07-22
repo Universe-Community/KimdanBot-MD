@@ -20,12 +20,12 @@ kim/
 ├── announcements.js     welcome/bye/promote + anti-* + bienvenidas masivas
 ├── middleware.js        anti-link / anti-spam / anti-fake / AFK
 ├── logger.js            Logs con niveles (LOG_LEVEL / .loglevel)
-├── authcare.js          Mantenimiento seguro del authFolder (poda por edad)
+├── authcare.js          Integridad del authFolder (sanea corruptos; NO poda por edad)
 ├── providers.js         Cadenas multi-proveedor para descargas (fallback)
 ├── games.js             Motor de minijuegos por chat (número/mates/ahorcado/gato)
 ├── anonchat.js          Chat anónimo 1:1 por privado (emparejamiento + relay)
 ├── commands*.js         Comandos (case/switch + COMMAND_META)
-├── subbots/             Sistema de sub-bots (sesión, gestor, persistencia)
+├── subbots/             Sub-bots: sesión, gestor, licencias (Mongo) y expiración
 └── idiomas/             Traducción y cadenas localizadas
 libs/biblioteca.js       Modelo MongoDB de libros (Mongoose)
 ```
@@ -136,10 +136,65 @@ comandos comparten carpeta). Mapa completo en `media/gifs/README.md`.
   backoff exponencial + jitter, aislamiento de errores.
 - **SubBotManager.js** — registro central singleton, persistencia en
   `subbots/registry.json`, reconexión automática al arrancar (`restoreAll`).
+- **store.js** — licencias (permanente/temporal): MongoDB (`Kim.SubBots`) con
+  fallback automático a `subbots/licenses.json` si no hay `MONGODB_URI`.
+  Índices: `expiresAt`, `state` y compuesto `{state, expiresAt}`.
+  Incluye `parseDuration()` (12h · 7d · 2w · 1m · 1a · permanente).
+- **expiry.js** — servicio de expiración. Barrido cada ~10 min con consulta
+  INDEXADA (`state='active' AND expiresAt<=now`): nunca recorre la colección
+  entera. Al vencer: cierra el socket, purga la sesión, marca `expired` y
+  notifica al owner. Idempotente y resistente a reinicios (usa timestamps
+  absolutos, no contadores en memoria).
 - **jadibot.js** — fachada (`startJadibot`/`stopJadibot`/`listJadibots`/
   `restoreSubBots`).
 
 Caches con TTL (sin `maxKeys`, que lanzaría al llenarse).
+
+### Licencias de sub-bots
+
+Los sub-bots **permanentes siguen funcionando igual que siempre**: si alguien
+se conecta con `.serbot` sin licencia previa, se le crea una PERMANENTE
+(`expiresAt=null`). Solo se vuelve temporal si un owner lo decide.
+
+| Comando | Uso |
+|---|---|
+| `.subbot @user <dur>` | Crea/actualiza licencia (`30d`, `12h`, `permanente`…) |
+| `.subbotinfo [@user]` | Detalle: creación, duración, expiración, restante, estado |
+| `.subbotlist` | Todas las licencias con estado y tiempo restante |
+| `.extendsubbot @user 30d` | Amplía el tiempo restante |
+| `.reducesubbot @user 15d` | Reduce el tiempo (nunca deja tiempo negativo) |
+| `.subbotrenew @user <dur>` | Renueva un sub-bot vencido |
+| `.subbotremove @user` | Cierra sesión, purga auth y elimina la licencia |
+
+Formatos de duración: `12h 24h 48h` · `7d 15d 30d 90d` · `2w 3w` ·
+`1m 3m 6m 12m` · `1a 2a` · `permanente`.
+
+---
+
+## Logs y filtrado de ruido
+
+La consola solo muestra información útil. El ruido interno del protocolo de
+WhatsApp está silenciado por defecto y es reactivable desde
+`settings.js → global.logFilter`:
+
+```js
+global.logFilter = {
+    showProtocolMessages:  false,  // protocolMessage, historySync, deviceSent…
+    showSenderKeyMessages: false,  // senderKeyDistributionMessage
+    showStickerMessages:   false,  // stickerMessage sin texto
+    showReactionMessages:  false,  // reactionMessage / pollUpdate
+    showPresenceMessages:  false,  // presencia (escribiendo/en línea)
+    showSignalMessages:    false,  // ruido de libsignal (ver abajo)
+    showDebugMessages:     false,  // equivale a LOG_LEVEL=debug
+};
+```
+
+**Importante:** `Decrypted message with closed session` NO es un error. Lo
+emite el paquete `libsignal` (dependencia de Baileys) con `console.warn`
+directo — por eso el logger pino de Baileys en `level:'silent'` no lo
+silencia. Significa que un mensaje se descifró correctamente usando una
+sesión ya archivada, algo normal al procesar mensajes en cola tras una
+reconexión. Actívalo con `showSignalMessages:true` solo para depurar.
 
 ---
 
