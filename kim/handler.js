@@ -36,12 +36,38 @@ import './commands_pack6.js'; // ← sistema completo de stickers y packs
 import './commands_pack7.js'; // ← VIP + comandos owner de economía (dar/quitar dinero, exp, diamantes)
 import './commands_pack8.js'; // ← gestión de comunidades (auditoría/limpieza) + multikick
 import './commands_pack9.js'; // ← mantenimiento owner: .authclean, .authstatus, .loglevel
+import './commands_subbots.js'; // ← licencias de sub-bots temporales (Mongo) + expiración
 import './commands_pack10.js'; // ← soundcloud/threads/ttimg, utilidades, juegos, mute, anti-viewonce, chat anónimo
 import * as commands from './commands.js'; // para los atajos del owner
 import { buildCmdMap, commandCount, aliasCount } from './registry.js';
 
 const GROUP_META_TTL_MS = 10 * 60 * 1000;
 const ERROR_THROTTLE_MS = 60 * 1000;
+
+// Tipos de mensaje internos del protocolo de WhatsApp que, si no llevan texto
+// visible, se silencian en consola salvo que se activen en global.logFilter.
+// Mapa mtype → flag de global.logFilter que lo re-habilita para depurar.
+const MUTED_MTYPES = {
+    senderKeyDistributionMessage: 'showSenderKeyMessages',
+    stickerMessage:               'showStickerMessages',
+    reactionMessage:              'showReactionMessages',
+    protocolMessage:              'showProtocolMessages',
+    historySyncNotification:      'showProtocolMessages',
+    deviceSentMessage:            'showProtocolMessages',
+    pollUpdateMessage:            'showReactionMessages',
+    pollCreationMessage:          'showProtocolMessages',
+    ephemeralMessage:             'showProtocolMessages',
+    viewOnceMessage:              'showProtocolMessages',
+    keepInChatMessage:            'showProtocolMessages',
+    encEventUpdateMessage:        'showProtocolMessages',
+};
+
+function _isMutedMtype(mtype) {
+    const flag = MUTED_MTYPES[mtype];
+    if (!flag) return false;                 // tipo con texto/relevante: se muestra
+    const f = global.logFilter || {};
+    return f[flag] !== true;                 // silenciado salvo que se active
+}
 
 export class Handler {
     constructor(conn) {
@@ -279,6 +305,7 @@ export class Handler {
 
         if (connection === 'open') {
             global._reconnectAttempts = 0;
+            this._reconnectScheduled = false;
             this._botJid = null;
             this._botLid = null;
             console.log(chalk.greenBright(`[CONEXIÓN] ✓ ${global.lenguaje?.smsConectado?.() || 'Conectado.'}`));
@@ -302,10 +329,18 @@ export class Handler {
                 return;
             }
 
+            // Reconexión ONE-SHOT. `connection:'close'` puede dispararse más de
+            // una vez por el mismo corte (socket + stream error), y cada
+            // disparo agendaba SU PROPIO start() → varios sockets simultáneos
+            // sobre el mismo authFolder. Este guard garantiza un único
+            // reintento por cierre; se libera al reabrir la conexión.
+            if (this._reconnectScheduled) return;
             if (typeof this._restart === 'function') {
-                setTimeout(() => this._restart().catch(e =>
-                    console.error(chalk.red('[CONEXIÓN] restart:'), e?.message || e)
-                ), 2000);
+                this._reconnectScheduled = true;
+                setTimeout(() => this._restart()
+                    .catch(e => console.error(chalk.red('[CONEXIÓN] restart:'), e?.message || e))
+                    .finally(() => { this._reconnectScheduled = false; }),
+                2000);
             }
         }
     }
@@ -489,10 +524,18 @@ export class Handler {
 
     _logMsg(m, body) {
         if (!log.enabled('info')) return;
+        // Filtro de ruido: los mensajes internos del protocolo de WhatsApp
+        // (sin texto visible) NO se imprimen salvo que se activen en
+        // global.logFilter. Antes se imprimían como `[stickerMessage]`,
+        // `[protocolMessage]`, `[senderKeyDistributionMessage]`, etc. y
+        // saturaban la consola. Son funcionamiento normal del protocolo, no
+        // errores, así que por defecto se silencian.
+        const hasText = !!(body && body.trim());
+        if (!hasText && _isMutedMtype(m.mtype)) return;
         try {
             const hh = new Date().toTimeString().slice(0, 8);
             const place = m.isGroup ? chalk.cyan(m.groupName || 'grupo') : chalk.gray('priv');
-            const display = body && body.trim()
+            const display = hasText
                 ? (body.length > 80 ? body.slice(0, 80) + '…' : body)
                 : `[${m.mtype || '?'}]`;
             const who = m.pushName || m.sender?.split('@')[0] || '?';
