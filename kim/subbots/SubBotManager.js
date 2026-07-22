@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SubBotSession, STATE } from './SubBotSession.js';
+import { getLicense, upsertLicense } from './store.js';
 
 const ROOT = path.resolve('./subbots');
 const REGISTRY = path.join(ROOT, 'registry.json');
@@ -73,7 +74,36 @@ class SubBotManager {
         await session.start();
         this._saveRegistry();
         this._syncGlobalConns();
+
+        // Bootstrap de licencia: si el sub-bot no tiene licencia previa (p.ej.
+        // se conectó con .serbot sin que un owner fijara duración), se crea
+        // una PERMANENTE por defecto. Si ya existía (temporal fijada por el
+        // owner con #subbot @user <dur>), se respeta y NO se sobrescribe.
+        try {
+            const existingLic = await getLicense(id);
+            if (!existingLic) await upsertLicense({ id, ownerJid, number: id, duration: null });
+        } catch { /* store opcional */ }
+
         return session;
+    }
+
+    /**
+     * Detiene y elimina un sub-bot por su id saneado, exista o no una sesión
+     * viva (p.ej. tras un reinicio en el que no se restauró). Purga la carpeta
+     * de auth si purge=true. Lo usa el servicio de expiración.
+     */
+    async removeById(id, { purge = true } = {}) {
+        const session = this.sessions.get(id);
+        if (session) {
+            await session.stop({ purge }).catch(() => {});
+            this.sessions.delete(id);
+        } else if (purge) {
+            // Sin sesión viva: purga la carpeta de auth directamente.
+            try { fs.rmSync(path.join(ROOT, 'sessions', id), { recursive: true, force: true }); } catch { /* */ }
+        }
+        this._saveRegistry();
+        this._syncGlobalConns();
+        return true;
     }
 
     async stop(ownerJid) {
